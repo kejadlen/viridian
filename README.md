@@ -3,7 +3,7 @@
 ## brainstorming
 
 - text content stores as markdown files so they can be tracked and versioned in git
-  - `change id - slug.md`
+  - `change-id slug.viri`
 - change ids a la jujutsu
 - metadata in sqlite db
 - viri cli
@@ -29,3 +29,6 @@
   - so private / public / work are separate nodes but can be interlinked?
   - this part needs a lot of thought development here
   - each node is a "garden" maybe?
+- text content stored on disk
+  - everything else in db
+- use LSP to project a file for editing?
