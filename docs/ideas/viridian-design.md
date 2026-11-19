@@ -4,15 +4,14 @@
 
 This document records the current goals and design for viridian, a
 personal knowledge system with a `viri` CLI and a native iOS app. It
-covers the goal, the node and component model, storage and sync, gardens
-and the cross-garden link rule, the leak check, editing, queries,
-publishing, and the first buildable slice.
+covers the goal, the node and component model, schemas, storage and
+sync, gardens and the cross-garden link rule, the leak check, editing,
+queries, publishing, and the first buildable slice.
 
-It doesn't cover the query language, the public authoring web UI's
-feature set, POSSE syndication, assets, archiving, semantic clustering,
-the work garden's own infrastructure, or a web or macOS app, which may
-come later. Those are deferred, and the
-unsettled ones are listed under [open questions](#open-questions).
+It doesn't cover the query language, POSSE syndication, assets,
+archiving, semantic clustering, or a web or macOS app, which may come
+later. Those are deferred, and the unsettled ones are listed under
+[open questions](#open-questions).
 
 This is a design record for the author, who is also the implementer. It
 assumes familiarity with markdown, git, jujutsu's change ids,
@@ -46,8 +45,8 @@ node has at most one body, and a node without one, such as a bookmark,
 is valid. Most imported notes carry a body and nothing else.
 
 Every other component is a named group of short, typed fields, such as
-`restaurant` with `url`, `address`, and `status`. Each one has a schema,
-declared up front, and viri-core validates every component against its
+`restaurant` with `url`, `address`, and `status`. Each one has a
+[schema](#schemas), and viri-core validates every component against its
 schema on every write. Schemas validate components, not whole nodes, so
 a node can carry several components or none. Long-form text belongs in
 the body, not in a field, so a recipe's instructions go in its body.
@@ -56,16 +55,40 @@ The model follows the entity component system (ECS) pattern, with a
 node as the entity. The processes that act on components, such as the
 indexer, the site build, and the leak check, are its systems.
 
-A node may also be an **entry**: an immutable, timestamped node attached
-to a parent node by the parent's change id. Entries record the history
-of a subject, while the parent stays freely editable.
+A node may also be an **entry**: a timestamped node attached to a
+parent node by the parent's change id. Entries record the history of a
+subject. They're editable like any other node, and git keeps the
+history of their bodies.
 
 Node ids are jujutsu-style random change ids, displayed by their
-shortest unique prefix. Body files are named `<change-id> <slug>.viri`,
-and links reference only the change id, so a slug can change without
-breaking links. Importing the archive migrates each legacy 12-digit
-timestamp id to a new change id and rewrites the links that use it. The
-old ids are not kept as aliases.
+shortest unique prefix. Importing the archive migrates each legacy
+12-digit timestamp id to a new change id and rewrites the links that use
+it. The old ids are not kept as aliases.
+
+Body files are named `<change-id> <slug>.viri`. Metadata owns the slug,
+and the slug in a filename is cosmetic: viri finds a body by its
+change-id prefix, splitting the filename on the first space. Whenever
+viri writes to a garden, it renames any file whose slug is stale, in a
+commit of its own. Two body files with the same change id are a `viri
+check` error. Links reference only the change id, so renames never break
+them.
+
+## Schemas
+
+Schemas are declared up front, compiled into viri-core, and shared by
+every garden. Adding or changing a component means rebuilding and
+redeploying viri on every device. Because every device and the public
+relay carry the full set, schema names and fields are not secret.
+
+Devices can run builds with different schema sets, such as an iOS app a
+release behind the laptop. A build that receives a component it doesn't
+know preserves it untouched on every save and shows it read-only, as raw
+fields. Only a build that knows the schema can edit the component.
+
+Schema migrations are manual. Before running one, you confirm that every
+device has synced; viri doesn't track devices or enforce this. If a
+device writes against the old schema after a migration, cleaning up
+that data is up to you.
 
 ## Storage
 
@@ -100,8 +123,7 @@ surface as git conflicts instead of merging character by character.
 Every device holds full copies of the gardens it can see and syncs them
 whenever it reaches a peer. An always-on server is one of those peers,
 not an authority. It relays git and Automerge changes between devices
-that are rarely online together, builds the static site, and hosts the
-public authoring web UI.
+that are rarely online together, and it builds the static site.
 
 The following table shows what each device holds and how it's used:
 
@@ -109,13 +131,29 @@ The following table shows what each device holds and how it's used:
 |---|---|---|
 | Personal laptop | Personal, public | `viri` CLI, `viri edit`, and jj on garden working copies |
 | iPhone | Personal, public | Native iOS app |
-| Server | Personal, public | Sync relay, site build, and authoring web UI |
-| Work laptop | Work only | A browser for editing public through the authoring web UI |
+| Work laptop | Public, work | `viri` CLI, `viri edit`, and jj on garden working copies |
+| Server | Personal, public | Sync relays and the site build |
+
+The server runs two Automerge relays. The tailnet relay serves personal
+and public to devices on the tailnet. The public relay is a separate
+process that loads only the public garden, so it can't leak personal
+metadata it never loaded. It's reachable from the internet so the work
+laptop, which can't join the tailnet, can sync public. Each device
+authenticates to it over TLS with its own token, which `viri device
+revoke` invalidates. The public relay and the public git forge are the
+only internet-facing write surfaces.
 
 The iOS app is a SwiftUI shell over viri-core, a Rust crate exposed
-through UniFFI. viri-core embeds the git and Automerge libraries, so the
-CLI and the app share one implementation of sync, schemas, and
-validation.
+through UniFFI. viri-core embeds the git and Automerge libraries, so
+every client shares one implementation of sync, schemas, and validation.
+
+viri-core uses [`git2`][git2] (libgit2) for git. As of November 2026,
+[gitoxide's status page][gix-status] lists push, merge orchestration,
+and SSH without an external `ssh` binary as unimplemented, and the iOS
+app needs all three.
+
+[git2]: https://crates.io/crates/git2
+[gix-status]: https://github.com/GitoxideLabs/gitoxide/blob/main/crate-status.md
 
 ## Gardens and scope
 
@@ -126,16 +164,16 @@ three gardens:
 | Garden | Copies held by | Served to |
 |---|---|---|
 | Personal | Personal laptop, iPhone, server | Your devices, over Tailscale |
-| Public | Personal laptop, iPhone, server | The internet, as a static site |
-| Work | The work machine | The work machine only |
+| Public | Personal laptop, iPhone, work laptop, server | The internet, as a static site |
+| Work | The work laptop | The work laptop only |
 
 The personal garden's git remote and Automerge relay are reachable only
 over the tailnet, so the network enforces personal's scope. The public
-garden's git repo may live on an internet-facing forge.
+garden's git repo may live on an internet-facing forge, and its
+metadata syncs to the work laptop through the public relay.
 
-The work laptop can't join the tailnet or run custom tooling. It edits
-public through the authoring web UI, which is the only internet-facing
-write surface.
+The work garden has no remote. It never leaves the work laptop, which
+also means it has no backup anywhere else.
 
 References flow only toward more available gardens:
 
@@ -154,12 +192,16 @@ allowed.
 The leak check enforces the link rule and the garden boundaries. It
 fails when any of the following is true:
 
-- A public node's body or metadata references a non-public change id.
+- A public node's body or metadata references a change id that isn't a
+  known public node.
 - A garden's root document lists a node from another garden.
 - The site build reads anything outside the public garden.
 
 A private change id in public content is an error even though the id
-itself is opaque, because the link text beside it is free-form.
+itself is opaque, because the link text beside it is free-form. An id
+the device can't resolve also fails, because the check can't prove it's
+public. On the work laptop, which holds no personal nodes, that rule
+catches a personal id pasted into public.
 
 viri-core implements one checker, which runs in these places:
 
@@ -192,15 +234,12 @@ also be edited directly in a garden's working copy and committed by hand
 with jj. Hand edits bypass save-time validation, which is why the leak
 check also runs before pushes and in the site build.
 
-When a fetch produces a body conflict, viri marks the node as
-conflicted. You resolve it with `viri edit` or with jj on the laptop.
-
-## Schema changes
-
-Schema migrations are manual. Before running one, you confirm that every
-device has synced; viri doesn't track devices or enforce this. If a
-device writes against the old schema after a migration, cleaning up
-that data is up to you.
+When a fetch produces a body conflict, viri-core completes the merge
+anyway, committing the conflict markers into the body, and flags the
+node as conflicted in the index. A repo is never left mid-merge, so
+other nodes keep syncing. You can resolve the conflict on any device:
+the iOS app offers keep mine, keep theirs, or edit, and a laptop uses
+`viri edit` or jj.
 
 ## Links
 
@@ -224,11 +263,11 @@ the old blog posts in the archive are not preserved.
 
 ## First slice
 
-The first buildable slice runs on the laptop only, against the personal
-garden, with no sync. It includes:
+The first buildable slice runs on the personal laptop only, against the
+personal garden, with no sync. It includes:
 
 - viri-core and the `viri` CLI
-- Declared schemas and validation
+- Compiled schemas and validation
 - Automerge metadata stored locally
 - Bodies in a git repo
 - The SQLite index
@@ -237,23 +276,14 @@ garden, with no sync. It includes:
 - An import of `archive/notes`
 
 This slice tests structure and query against real data before any sync,
-iOS, LSP, site, or web UI work. With only one garden, the leak check
-waits until public exists.
+iOS, LSP, or site work. With only one garden, the leak check waits until
+public exists.
 
 ## Open questions
 
-- Where schemas live. They are assumed to be documents in the metadata
-  store, so a new component syncs to every device without a rebuild.
-- The query language exposed by `viri query`.
-- The public authoring web UI's feature set and login mechanism.
-- How entry immutability holds up against hand edits to bodies in git,
-  and whether `viri check` flags edited entries.
-- How the iOS app presents sync conflicts.
-- Which git library viri-core uses. `git2` supports push; whether
-  gitoxide does is unverified.
-- How renames work, given that a slug change renames the body file in
-  git.
-- The work garden's infrastructure, since the work machine can't run
-  custom tooling.
+- The query language exposed by `viri query`. The first slice includes
+  `viri query`, so this has to be settled before that slice is done.
+- Whether the work garden needs a backup, given that it has no remote.
+- Whether to move to gitoxide once it supports push and SSH.
 - POSSE syndication: platforms, which nodes syndicate, and whether
-  replies flow back.
+  replies flow back. This waits until the static site exists.
