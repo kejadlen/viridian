@@ -2,7 +2,7 @@
 
 This document records the plan for viridian's first buildable slice and
 the implementation decisions behind it. The design itself lives in
-[viridian design](ideas/viridian-design.md). This plan replaces the
+[viridian design](viri:soqlqxoq). This plan replaces the
 scope listed in that document's "First slice" section.
 
 The goal is to dogfood as soon as possible. The slice runs on the
@@ -118,4 +118,3 @@ root document that lists it. A crash between the two leaves an unlisted
 document, which stays hidden.
 
 A stale-slug rename gets its own commit, inserted below `@` like any
-other.
