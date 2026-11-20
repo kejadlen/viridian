@@ -1,0 +1,121 @@
+# First slice
+
+This document records the plan for viridian's first buildable slice and
+the implementation decisions behind it. The design itself lives in
+[viridian design](ideas/viridian-design.md). This plan replaces the
+scope listed in that document's "First slice" section.
+
+The goal is to dogfood as soon as possible. The slice runs on the
+personal laptop only, against the personal garden, with no sync.
+
+## Scope
+
+The first slice is write-first: you can capture real notes before
+anything reads them back in bulk. It includes the following:
+
+- A cargo workspace with the `viri-core` library and the `viri` binary
+- The body and a `tags` component, with compiled schemas and validation
+- Automerge metadata stored locally
+- Bodies in a jj repo, committed through jj-lib
+- `viri new <slug>`, which creates a node and opens the editor
+- `viri edit <prefix>`, with validation
+- `viri ls`, which lists short change ids, slugs, and tags
+
+These slices follow, in order:
+
+1. The SQLite index and `viri query`
+2. The `restaurant` and `recipe` components
+3. An import of `archive/notes`
+
+## Components
+
+`viri-core` is the library every client calls, and later the UniFFI
+surface for iOS. It has these modules:
+
+| Module | Responsibility |
+|---|---|
+| `id` | Generates change ids and resolves shortest unique prefixes |
+| `schema` | Compiled component types and validation errors with field paths |
+| `meta` | Automerge store: one document per node, a root document per garden |
+| `body` | The jj repo of `<change-id> <slug>.viri` files |
+| `garden` | Joins `meta` and `body` into a `Node`: create, load, list, save |
+
+The `viri` binary has these modules:
+
+| Module | Responsibility |
+|---|---|
+| `cli` | The `new`, `edit`, and `ls` commands; finds the garden |
+| `buffer` | Renders a node as YAML frontmatter and body, parses it back, and injects validation errors as comments |
+| `editor` | The tempfile and `$EDITOR` loop, reopening on errors, and the recovery file |
+
+## Decisions
+
+### Write-first
+
+Capture comes before query and import. Once real notes exist, import
+can't be rerun from scratch to fix a schema mistake. It becomes a
+one-shot merge into a garden that already holds live nodes, and its link
+rewriting touches only imported nodes.
+
+### No backup in the first slice
+
+The Automerge metadata exists only on the laptop until sync exists. The
+first slice relies on whatever already backs up the laptop.
+
+### `viri ls`
+
+The design doesn't list `viri ls`. Without it, nothing in the first
+slice shows you a change id to pass to `viri edit`.
+
+### The edit buffer belongs to the binary
+
+The YAML frontmatter format lives in `viri`, not `viri-core`. The iOS
+app doesn't use it, and `viri lsp` will live in the same binary.
+`viri-core` validates typed components, not YAML text.
+
+### Commit bodies with jj-lib, below `@`
+
+The design specifies [`git2`][git2] for git. The first slice commits
+bodies with [`jj-lib`][jj-lib] instead, so viri's commits and hand
+edits made with jj share one working copy without either clobbering the
+other.
+
+viri inserts each commit as a new parent of the working-copy commit
+`@`, as `jj new -B @` would. For example, suppose you've hand-edited
+`harissa` without committing, then save `sesame-noodles` with `viri
+edit`:
+
+```
+@   your uncommitted harissa edit
+○   viri: edit sesame-noodles
+○   the previous commit
+```
+
+The harissa edit stays in `@` and never lands in viri's commit. If a
+hand edit touches the same body, jj records the rebased `@` as
+conflicted.
+
+jj-lib is pinned to an exact version, 0.47.1 to start, because its API
+changes between releases. It commits in process through gix, but it
+shells out to a `git` binary for fetch and push
+([`git_subprocess.rs`][jj-subprocess]), and iOS has no `git` binary.
+The sync slice still has to choose a library for fetch and push. The
+design's reasons for `git2` still apply there.
+
+[git2]: https://crates.io/crates/git2
+[jj-lib]: https://crates.io/crates/jj-lib
+[jj-subprocess]: https://docs.rs/crate/jj-lib/0.47.1/source/src/git_subprocess.rs
+
+### Write order on save
+
+A save commits the body first and writes Automerge metadata second. A
+body without metadata stays hidden, so a crash between the two steps
+leaves nothing visible. Writing metadata first would leave a visible
+node whose body is pending.
+
+Creating a node writes the node's metadata document before the garden's
+root document that lists it. A crash between the two leaves an unlisted
+document, which stays hidden.
+
+A stale-slug rename gets its own commit, inserted below `@` like any
+other.
