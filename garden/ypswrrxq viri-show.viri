@@ -1,0 +1,5 @@
+# Add `viri show` to the first slice
+
+`viri show <prefix>` prints a node to stdout: its frontmatter and body,
+rendered by the same `buffer` module that `viri edit` uses. It reads a
+node without opening an editor.

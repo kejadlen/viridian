@@ -7,8 +7,9 @@ description: Use when working on viridian — after finishing a task or making a
 
 Work on viridian is tracked in viridian: `garden/` is the personal
 garden, hand-maintained until `viri` can do it. Every task finished and
-every decision made becomes an **entry**, a node attached to the node it
-concerns. There is no backlog; record what happened, not what's planned.
+every decision made becomes an **entry**: a node with a `parent`
+component for each node it concerns. There is no backlog; record what
+happened, not what's planned.
 
 ## Layout
 
@@ -20,19 +21,21 @@ concerns. There is no backlog; record what happened, not what's planned.
 node <id> {
     slug <kebab-slug>
     created "<UTC timestamp>"
-    entry parent=<parent id>
+    parent <parent id>
+    parent <another parent id>
 }
 ```
 
-`slug` and `created` are required. Every other child is a component;
-`entry` marks the node as an entry. Leave out components you don't need,
-including tags: relate nodes with links, not tags.
+`slug` and `created` are required. Every other child is a component,
+and `parent` can repeat. Leave out components you don't need, including
+tags: relate nodes with links and parents, not tags.
 
 ## Record an entry
 
-1. Pick the parent: the node the task or decision is about. Decisions
-   about the build plan go on `wopxuwkn` (first-slice); anything broader
-   goes on `qmplyuym` (viridian).
+1. Pick the parents: every node the task or decision is about. Design
+   decisions go on `soqlqxoq` (viridian-design), decisions about the
+   build plan on `wopxuwkn` (first-slice), and anything broader on
+   `qmplyuym` (viridian).
 2. Generate an id and confirm it's unused:
 
    ```sh
@@ -44,8 +47,8 @@ including tags: relate nodes with links, not tags.
 4. Write the body: a `#` title, then what was decided or done and why, in
    a few sentences. Link other nodes as `[text](viri:<id>)`.
 5. Append the `node` block to `garden/viri.kdl`.
-6. If the entry makes the parent's body wrong, garden the parent so it
-   states the current plan. Entries keep the history; the parent stays
+6. If the entry makes a parent's body wrong, garden that parent so it
+   states the current plan. Entries keep the history; parents stay
    current.
 7. Commit the entry with the work it records, not separately.
 

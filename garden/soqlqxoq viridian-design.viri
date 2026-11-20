@@ -55,10 +55,12 @@ The model follows the entity component system (ECS) pattern, with a
 node as the entity. The processes that act on components, such as the
 indexer, the site build, and the leak check, are its systems.
 
-A node may also be an **entry**: a timestamped node attached to a
-parent node by the parent's change id. Entries record the history of a
-subject. They're editable like any other node, and git keeps the
-history of their bodies.
+A **parent** component names another node by change id. A node can
+carry several, so any node can have several parents, and the garden is
+a directed acyclic graph rather than a tree. An **entry** is nothing
+more than a node with parent components. Entries record the history of
+their parents' subjects, ordered by creation time. They're editable
+like any other node, and git keeps the history of their bodies.
 
 Node ids are jujutsu-style random change ids, displayed by their
 shortest unique prefix. Importing the archive migrates each legacy
@@ -112,8 +114,8 @@ without the body yet shows the node with its body pending.
 Because each node has its own metadata document, a garden's root
 document is the access boundary. A process given only the public root
 never receives personal metadata. The cost is that Automerge can't
-change several documents atomically, so an operation such as creating an
-entry and linking it to its parent spans two documents.
+change several documents atomically, so an operation such as creating a
+node and listing it in the root document spans two documents.
 
 Keeping bodies in git means concurrent body edits from two devices
 surface as git conflicts instead of merging character by character.

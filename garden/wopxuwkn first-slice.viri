@@ -14,12 +14,16 @@ The first slice is write-first: you can capture real notes before
 anything reads them back in bulk. It includes the following:
 
 - A cargo workspace with the `viri-core` library and the `viri` binary
-- The body and a `tags` component, with compiled schemas and validation
+- The body, a `tags` component, and a `parent` component, with compiled
+  schemas and validation
 - Metadata in `garden/viri.kdl` to start, with Automerge later
 - Bodies in a jj repo, committed through jj-lib
-- `viri new <slug>`, which creates a node and opens the editor
+- `viri new [<parent>...]`, which opens the editor on a new node with a
+  `parent` component for each prefix given; the slug goes in the
+  frontmatter like any other metadata
 - `viri edit <prefix>`, with validation
 - `viri ls`, which lists short change ids, slugs, and tags
+- `viri show <prefix>`, which prints a node in the edit buffer's format
 
 These slices follow, in order:
 
@@ -44,7 +48,7 @@ The `viri` binary has these modules:
 
 | Module | Responsibility |
 |---|---|
-| `cli` | The `new`, `edit`, and `ls` commands; finds the garden |
+| `cli` | The `new`, `edit`, `ls`, and `show` commands; finds the garden |
 | `buffer` | Renders a node as YAML frontmatter and body, parses it back, and injects validation errors as comments |
 | `editor` | The tempfile and `$EDITOR` loop, reopening on errors, and the recovery file |
 
