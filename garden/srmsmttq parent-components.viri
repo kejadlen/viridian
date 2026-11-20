@@ -1,6 +1,0 @@
-# Entries are nodes with parent components
-
-A `parent` component names one parent by change id, and a node can
-carry several, so any node can have several parents. An entry isn't a
-special kind of node: it's any node with parent components. This
-replaces the single-parent `entry` component used in `viri.kdl` so far.

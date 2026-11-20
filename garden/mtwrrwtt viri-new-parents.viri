@@ -1,5 +1,0 @@
-# `viri new` takes parents, not a slug
-
-`viri new [<parent>...]` takes zero or more parent prefixes and adds a
-`parent` component for each. The slug is set in the frontmatter like
-any other metadata, and a save without one fails validation.

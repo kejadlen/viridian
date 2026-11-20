@@ -1,7 +1,0 @@
-# Track work on viridian as entries
-
-Every finished task and every decision becomes an entry on the node it
-concerns. There's no backlog yet: entries record what happened, not
-what's planned. The `garden` skill in `.claude/skills/garden` describes
-how to write one, and an entry is an `entry parent=<id>` component in
-`viri.kdl`.

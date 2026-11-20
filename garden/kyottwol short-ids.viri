@@ -1,5 +1,0 @@
-# Use 8-character ids
-
-Node ids are 4 random bytes in jj's reverse-hex alphabet, 8 characters,
-in place of jj's full 32. At 1,000 nodes the chance of any collision is
-about 0.01%, so creating a node checks for an existing id and retries.
