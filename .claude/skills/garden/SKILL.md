@@ -6,11 +6,10 @@ description: Use when working on viridian — after finishing a task or making a
 # Garden
 
 Work on viridian is tracked in viridian. The ai garden, tended by AI, is
-its own jj repo at `gardens/ai`, gitignored inside viridian's checkout,
-and hand-maintained until `viri` can do it. Every task finished and every
-decision made becomes an **entry**: a node with a `parent` component for
-each node it concerns. There is no backlog; record what happened, not
-what's planned.
+its own jj repo at `gardens/ai`, gitignored inside viridian's checkout.
+Every task finished and every decision made becomes an **entry**: a node
+with a `parent` component for each node it concerns. There is no backlog;
+record what happened, not what's planned.
 
 ## Layout
 
@@ -19,16 +18,17 @@ what's planned.
 - Ids are 8 characters: 4 random bytes in jj's reverse-hex alphabet.
 
 ```kdl
-node <id> {
-    slug <kebab-slug>
+node "<id>" {
+    slug "<kebab-slug>"
     created "<UTC timestamp>"
-    parent <parent id>
-    parent <another parent id>
+    parent "<parent id>"
+    parent "<another parent id>"
 }
 ```
 
-`slug` and `created` are required. Every other child is a component,
-and `parent` can repeat. Leave out components you don't need, including
+Values are quoted strings, so the file is valid KDL. `slug` and
+`created` are required. Every other child is a component, and `parent`
+can repeat. Leave out components you don't need, including
 tags: relate nodes with links and parents, not tags.
 
 ## Record an entry
@@ -37,21 +37,26 @@ tags: relate nodes with links and parents, not tags.
    decisions go on `soqlqxoq` (viridian-design), decisions about the
    build plan on `wopxuwkn` (first-slice), and anything broader on
    `qmplyuym` (viridian).
-2. Generate an id and confirm it's unused:
+2. Record the entry with `viri`, from the repo root:
 
    ```sh
-   head -c4 /dev/urandom | xxd -p | tr '0-9a-f' 'zyxwvutsrqponmlk'
-   grep -c '<id>' gardens/ai/viri.kdl
+   cargo build -p viri
+   ./target/debug/viri --garden gardens/ai new <parent-prefix>...
    ```
 
-3. Get the timestamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
-4. Write the body: a `#` title, then what was decided or done and why, in
-   a few sentences. Link other nodes as `[text](viri:<id>)`.
-5. Append the `node` block to `gardens/ai/viri.kdl`.
-6. If the entry makes a parent's body wrong, garden that parent so it
+   Fill in the `slug` and write the body in the editor: a `#` title, then
+   what was decided or done and why, in a few sentences. Link other nodes
+   as `[text](viri:<id>)`. `viri new` commits the body below `@` and
+   appends the `node` block to `viri.kdl`.
+
+   To record an entry without the editor (as when driving `viri` from a
+   script), set `EDITOR` to a small program that rewrites the buffer file
+   it's given.
+3. If the entry makes a parent's body wrong, garden that parent so it
    states the current plan. Entries keep the history; parents stay
-   current.
-7. Commit in the garden repo with `jj -R gardens/ai commit`, at the
+   current. `viri edit <prefix>` edits a node; committing the `viri.kdl`
+   change in `@` is still yours to do.
+4. Commit the working copy with `jj -R gardens/ai commit`, at the
    same time as the viridian commit for the work it records.
 
 ## Rules

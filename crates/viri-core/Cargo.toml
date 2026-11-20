@@ -1,0 +1,22 @@
+[package]
+name = "viri-core"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+camino.workspace = true
+futures.workspace = true
+fs-err.workspace = true
+getrandom.workspace = true
+jiff.workspace = true
+jj-lib.workspace = true
+kdl.workspace = true
+miette.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "*", features = ["rt-multi-thread", "macros"] }

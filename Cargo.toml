@@ -1,6 +1,38 @@
-[package]
-name = "viridian"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = ["crates/viri", "crates/viri-core"]
 
-[dependencies]
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+camino = "*"
+clap = { version = "*", features = ["derive"] }
+fs-err = "*"
+futures = "*"
+getrandom = "*"
+hegeltest = "*"
+jiff = "0.2"
+jj-lib = "=0.47.1"
+kdl = "6"
+miette = { version = "*", features = ["fancy"] }
+tempfile = "*"
+thiserror = "*"
+viri-core = { path = "crates/viri-core" }
+
+[workspace.lints.clippy]
+self_named_module_files = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+
+# The container this builds in has 1GB of RAM; full debuginfo makes the
+# linker OOM.
+[profile.dev]
+debug = false
+
+[profile.test]
+debug = false
