@@ -15,7 +15,7 @@ anything reads them back in bulk. It includes the following:
 
 - A cargo workspace with the `viri-core` library and the `viri` binary
 - The body and a `tags` component, with compiled schemas and validation
-- Automerge metadata stored locally
+- Metadata in `garden/viri.kdl` to start, with Automerge later
 - Bodies in a jj repo, committed through jj-lib
 - `viri new <slug>`, which creates a node and opens the editor
 - `viri edit <prefix>`, with validation

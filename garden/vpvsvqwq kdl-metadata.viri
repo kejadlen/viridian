@@ -1,0 +1,7 @@
+# Keep metadata in KDL to start
+
+Metadata lives in one hand-maintained KDL file, `garden/viri.kdl`, in
+place of Automerge. Each node is a `node` block with `slug` and
+`created`, and each component is a child node named after its schema.
+The point is to see what the on-disk shape looks like before writing
+code.

@@ -1,0 +1,7 @@
+# Keep viridian's docs as garden nodes
+
+The [design](viri:soqlqxoq) and the [first slice](viri:wopxuwkn) moved
+from `docs/` into `garden/`, so viridian's own docs are the first real
+data. Docs link to each other with `viri:` links. `created` replaces
+dated filenames, and the docs carry no tags, because links already
+relate them.
