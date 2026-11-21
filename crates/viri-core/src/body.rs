@@ -267,9 +267,11 @@ fn body_paths(root: &Utf8Path, id: &NodeId) -> Result<Vec<Utf8PathBuf>, BodiesEr
     for entry in fs_err::read_dir(root)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            // cov-excl-macos-start
             paths.push(Utf8PathBuf::try_from(entry.path()).map_err(|err| {
                 BodiesError::Load(format!("body file name is not UTF-8: {}", err).into())
             })?);
+            // cov-excl-macos-stop
         }
     }
     paths.sort();
@@ -361,8 +363,8 @@ fn load_settings() -> Result<UserSettings, BodiesError> {
 fn hostname() -> String {
     fs_err::read_to_string("/proc/sys/kernel/hostname")
         .ok()
-        .map(|h| h.trim().to_owned())
-        .filter(|h| !h.is_empty())
+        .map(|h| h.trim().to_owned()) // cov-excl-macos-line
+        .filter(|h| !h.is_empty()) // cov-excl-macos-line
         // Linux always serves /proc/sys/kernel/hostname; the fallbacks are
         // for platforms without it.
         .or_else(|| std::env::var("HOSTNAME").ok()) // cov-excl-line
@@ -588,6 +590,7 @@ mod tests {
         set_env("JJ_CONFIG_DIR", None);
     }
 
+    // cov-excl-macos-start
     #[test]
     #[cfg_attr(target_os = "macos", ignore = "APFS rejects non-UTF-8 file names")]
     fn non_utf8_conf_entries_are_skipped() {
@@ -606,10 +609,25 @@ mod tests {
         );
         set_env("JJ_CONFIG_DIR", None);
     }
+    // cov-excl-macos-stop
 
     #[test]
     fn hostname_and_username_fall_back() {
         assert!(!hostname().is_empty());
         assert!(!username().is_empty());
+    }
+
+    #[test]
+    fn username_falls_back_to_logname_then_unknown() {
+        let _guard = ENV.lock().unwrap();
+        let user = std::env::var("USER").ok();
+        let logname = std::env::var("LOGNAME").ok();
+        set_env("USER", None);
+        set_env("LOGNAME", Some("logged-in"));
+        assert_eq!(username(), "logged-in");
+        set_env("LOGNAME", None);
+        assert_eq!(username(), "unknown");
+        set_env("USER", user.as_deref());
+        set_env("LOGNAME", logname.as_deref());
     }
 }

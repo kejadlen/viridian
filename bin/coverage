@@ -29,6 +29,16 @@ main() {
     # 1GB container's memory in parallel. Override for roomier machines.
     cargo test --workspace --quiet -j"${VIRI_COVERAGE_JOBS:-1}"
 
+    local excl_line='cov-excl-line|unreachable!'
+    local excl_start='cov-excl-start'
+    local excl_stop='cov-excl-stop'
+    # APFS rejects non-UTF-8 file names and macOS has no /proc.
+    if [[ "$(uname -s)" == Darwin ]]; then
+        excl_line+='|cov-excl-macos-line'
+        excl_start+='|cov-excl-macos-start'
+        excl_stop+='|cov-excl-macos-stop'
+    fi
+
     local report
     report=$(grcov "$TARGET_DIR/profraw" \
         --binary-path "./$TARGET_DIR/debug/" \
@@ -37,9 +47,9 @@ main() {
         --ignore-not-existing \
         --keep-only 'crates/*/src/**' \
         --ignore 'crates/viri/src/main.rs' \
-        --excl-line 'cov-excl-line|unreachable!' \
-        --excl-start 'cov-excl-start' \
-        --excl-stop 'cov-excl-stop')
+        --excl-line "$excl_line" \
+        --excl-start "$excl_start" \
+        --excl-stop "$excl_stop")
 
     # Per-file breakdown: walk the covdir tree, printing leaf files only.
     jq --raw-output '

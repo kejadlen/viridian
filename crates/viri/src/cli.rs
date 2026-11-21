@@ -144,7 +144,9 @@ fn find_garden(explicit: Option<PathBuf>) -> Result<Utf8PathBuf, GardenNotFound>
     let mut dir: Option<&std::path::Path> = Some(cwd.as_path());
     while let Some(current) = dir {
         if current.join("viri.kdl").is_file() {
+            // cov-excl-macos-start
             return Utf8PathBuf::try_from(current.to_owned()).map_err(|_| GardenNotFound);
+            // cov-excl-macos-stop
         }
         dir = current.parent();
     }
