@@ -13,9 +13,8 @@ readonly THRESHOLD=100
 readonly TARGET_DIR="target/coverage"
 
 main() {
-    # RUSTFLAGS replaces .cargo/config.toml's rustflags, so the lld link
-    # flag is repeated here.
-    export RUSTFLAGS="-Cinstrument-coverage -C link-arg=-fuse-ld=lld"
+    # Appends so the container's lld flag survives.
+    export RUSTFLAGS="${RUSTFLAGS-} -Cinstrument-coverage"
     export CARGO_TARGET_DIR="$TARGET_DIR"
     # Absolute: test binaries may run with a different working directory.
     export LLVM_PROFILE_FILE="$PWD/$TARGET_DIR/profraw/%p-%m.profraw"
