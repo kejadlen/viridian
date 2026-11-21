@@ -216,11 +216,14 @@ impl Bodies {
         let workspace_name = self.workspace.workspace_name().to_owned();
         let mut repo = self.repo.clone();
         let mut locked_ws = self.workspace.start_working_copy_mutation().await?;
-        let wc_commit = wc_commit(&repo, &workspace_name).await?;
+        let mut wc_commit = wc_commit(&repo, &workspace_name).await?;
         match WorkingCopyFreshness::check_stale(locked_ws.locked_wc(), &wc_commit, &repo).await? {
             WorkingCopyFreshness::Fresh => {}
             WorkingCopyFreshness::Updated(op) => {
+                // The working copy moved past our loaded head; the commit to
+                // rewrite is the reloaded repo's, not the stale one's.
                 repo = repo.reload_at(&op).await?;
+                wc_commit = crate::body::wc_commit(&repo, &workspace_name).await?;
             }
             WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation => {
                 return Err(BodiesError::Stale);
@@ -296,7 +299,9 @@ async fn file_content(
     reader
         .read_to_end(&mut content)
         .await
-        .map_err(|err| BackendError::Other(Box::new(err)))?;
+        // The store just handed us this reader; an I/O failure mid-read has
+        // no reproduction path in tests.
+        .map_err(|err| BackendError::Other(Box::new(err)))?; // cov-excl-line
     Ok(Some(content))
 }
 async fn detached_commit(
@@ -358,8 +363,10 @@ fn hostname() -> String {
         .ok()
         .map(|h| h.trim().to_owned())
         .filter(|h| !h.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "localhost".to_owned())
+        // Linux always serves /proc/sys/kernel/hostname; the fallbacks are
+        // for platforms without it.
+        .or_else(|| std::env::var("HOSTNAME").ok()) // cov-excl-line
+        .unwrap_or_else(|| "localhost".to_owned()) // cov-excl-line
 }
 
 fn username() -> String {
@@ -474,4 +481,134 @@ pub enum BodiesError {
     #[error(transparent)]
     #[diagnostic(code(viri_core::body::io))]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    // These tests mutate process environment; the mutex keeps them from
+    // racing each other.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_env(key: &str, value: Option<&str>) {
+        // Safe under the ENV mutex, within a single-threaded test run.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn jj_config_replaces_the_config_directory() {
+        let _guard = ENV.lock().unwrap();
+        set_env("JJ_CONFIG", Some("/tmp/one-config.toml"));
+        assert_eq!(
+            user_config_paths(),
+            vec![Utf8PathBuf::from("/tmp/one-config.toml")]
+        );
+        set_env("JJ_CONFIG", None);
+    }
+
+    #[test]
+    fn config_paths_follow_the_config_directory() {
+        let _guard = ENV.lock().unwrap();
+        set_env("JJ_CONFIG", None);
+        set_env("JJ_CONFIG_DIR", Some("/tmp/jj-config"));
+        assert_eq!(
+            user_config_paths(),
+            vec![Utf8PathBuf::from("/tmp/jj-config/config.toml")]
+        );
+        set_env("JJ_CONFIG_DIR", None);
+
+        set_env("XDG_CONFIG_HOME", Some("/tmp/xdg"));
+        assert_eq!(
+            user_config_paths(),
+            vec![Utf8PathBuf::from("/tmp/xdg/jj/config.toml")]
+        );
+        set_env("XDG_CONFIG_HOME", None);
+    }
+
+    #[test]
+    fn a_present_config_file_is_loaded() {
+        let _guard = ENV.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        fs_err::write(
+            dir.path().join("config.toml"),
+            "[user]\nname = \"Loaded\"\nemail = \"l@example.com\"\n",
+        )
+        .unwrap();
+        set_env(
+            "JJ_CONFIG",
+            Some(dir.path().join("config.toml").to_str().unwrap()),
+        );
+        let settings = load_settings().unwrap();
+        assert_eq!(settings.user_name(), "Loaded");
+
+        // A config directory with no config.toml skips it, and the
+        // defaults leave the identity empty rather than erroring.
+        let empty = tempfile::TempDir::new().unwrap();
+        set_env("JJ_CONFIG", None);
+        set_env("JJ_CONFIG_DIR", Some(empty.path().to_str().unwrap()));
+        assert_eq!(load_settings().unwrap().user_name(), "");
+        set_env("JJ_CONFIG_DIR", None);
+    }
+
+    #[test]
+    fn without_any_config_environment_there_are_no_paths() {
+        let _guard = ENV.lock().unwrap();
+        set_env("JJ_CONFIG", None);
+        set_env("JJ_CONFIG_DIR", None);
+        set_env("XDG_CONFIG_HOME", None);
+        set_env("HOME", None);
+        assert!(user_config_paths().is_empty());
+    }
+
+    #[test]
+    fn confd_toml_files_are_read_sorted_and_others_skipped() {
+        let _guard = ENV.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let confd = dir.path().join("conf.d");
+        fs_err::create_dir(&confd).unwrap();
+        fs_err::write(confd.join("b.toml"), "").unwrap();
+        fs_err::write(confd.join("a.toml"), "").unwrap();
+        fs_err::write(confd.join("ignored.txt"), "").unwrap();
+        set_env("JJ_CONFIG_DIR", Some(dir.path().to_str().unwrap()));
+
+        let paths = user_config_paths();
+        let confd_paths: Vec<String> = paths[1..]
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string())
+            .collect();
+        assert_eq!(confd_paths, vec!["a.toml", "b.toml"]);
+
+        set_env("JJ_CONFIG_DIR", None);
+    }
+
+    #[test]
+    fn non_utf8_conf_entries_are_skipped() {
+        let _guard = ENV.lock().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let confd = dir.path().join("conf.d");
+        fs_err::create_dir(&confd).unwrap();
+        let bad = std::ffi::OsStr::from_bytes(b"bad-\xff.toml");
+        fs_err::write(confd.join(bad), "").unwrap();
+        fs_err::write(confd.join("good.toml"), "").unwrap();
+        set_env("JJ_CONFIG_DIR", Some(dir.path().to_str().unwrap()));
+
+        assert_eq!(
+            user_config_paths()[1..],
+            vec![Utf8PathBuf::try_from(confd.join("good.toml")).unwrap()]
+        );
+        set_env("JJ_CONFIG_DIR", None);
+    }
+
+    #[test]
+    fn hostname_and_username_fall_back() {
+        assert!(!hostname().is_empty());
+        assert!(!username().is_empty());
+    }
 }

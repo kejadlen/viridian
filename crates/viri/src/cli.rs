@@ -82,7 +82,7 @@ async fn show(garden: &Garden, prefix: &str) -> Result<(), miette::Report> {
     let node = garden.load(&id).await?;
     print!(
         "{}",
-        crate::buffer::render(&Buffer::new(node.meta, node.body), &[])
+        crate::buffer::render(&Buffer::new(node.meta, node.body))
     );
     Ok(())
 }

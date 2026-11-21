@@ -22,6 +22,7 @@ use crate::schema::NodeMeta;
 
 /// The metadata store: a parsed `viri.kdl`, mutable in memory, written back
 /// in a canonical hand-friendly style.
+#[derive(Debug)]
 pub struct Meta {
     path: Utf8PathBuf,
     name: String,
@@ -30,6 +31,7 @@ pub struct Meta {
 
 /// One `node` block: the typed metadata plus any components this build
 /// doesn't know, preserved for the write.
+#[derive(Debug)]
 struct Block {
     meta: NodeMeta,
     extra: Vec<KdlNode>,
@@ -171,8 +173,8 @@ fn write_node(out: &mut String, node: &KdlNode, depth: usize) {
     out.push_str(node.name().value());
     for entry in node.entries() {
         match entry.name() {
-            Some(name) => out.push_str(&format!(" {name}={}", entry.value())),
-            None => out.push_str(&format!(" {}", entry.value())),
+            Some(name) => out.push_str(&format!(" {name}={}", kdl_value(entry.value()))),
+            None => out.push_str(&format!(" {}", kdl_value(entry.value()))),
         }
     }
     if let Some(children) = node.children() {
@@ -184,6 +186,21 @@ fn write_node(out: &mut String, node: &KdlNode, depth: usize) {
         out.push_str("}\n");
     } else {
         out.push('\n');
+    }
+}
+
+/// A KDL literal for a value; `KdlValue`'s own `Display` prints strings
+/// bare, which would not round-trip.
+fn kdl_value(value: &kdl::KdlValue) -> String {
+    match value {
+        kdl::KdlValue::String(s) => {
+            let escaped = s
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n");
+            format!("\"{escaped}\"")
+        }
+        other => other.to_string(),
     }
 }
 
@@ -288,7 +305,7 @@ pub enum MetaError {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = r#"garden "ai"
+    pub(super) const SAMPLE: &str = r#"garden "ai"
 
 node "qmplyuym" {
     slug "viridian"
@@ -344,11 +361,131 @@ node "wopxuwkn" {
         for bad in [
             "node \"qmplyuym\" {\n}",
             "garden \"ai\"\nnode \"nope!\" {\n}\n",
-            "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n}\nnode \"qmplyuym\" {\n    slug \"b\"\n}\n",
+            "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"2026-11-20T14:46:41Z\"\n}\nnode \"qmplyuym\" {\n    slug \"b\"\n}\n",
             "garden \"ai\"\ngarden \"ai\"\n",
-            "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"not-a-time\"\n}\n",
+            "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n}\n",
         ] {
             assert!(Meta::parse("viri.kdl".into(), bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn names_each_malformed_piece() {
+        let cases = [
+            ("garden \"ai\"\nnode \"qmplyuym\"\n", "has no `{ }` block"),
+            (
+                "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"2026-11-20T14:46:41Z\"\n    created \"2026-11-21T10:00:00Z\"\n}\n",
+                "two `created` lines",
+            ),
+            (
+                "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"2026-11-20T14:46:41Z\"\n    parent \"nope\"\n}\n",
+                "is not a node id",
+            ),
+            (
+                "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"2026-11-20T14:46:41Z\"\n    tags \"a\" \"b\"\n}\n",
+                "exactly one argument",
+            ),
+            (
+                "garden \"ai\"\nnode \"qmplyuym\" {\n    slug 42\n    created \"2026-11-20T14:46:41Z\"\n}\n",
+                "quoted string",
+            ),
+            (
+                "garden \"ai\"\nnode \"qmplyuym\" {\n    slug \"a\"\n    created \"2026-11-20T14:46:41Z\"\n}\nnode \"qmplyuym\" {\n    slug \"b\"\n    created \"2026-11-20T14:46:41Z\"\n}\n",
+                "appears twice",
+            ),
+        ];
+        for (text, expected) in cases {
+            let err = Meta::parse("viri.kdl".into(), text).expect_err("rejected");
+            let MetaError::Invalid { message, .. } = err else {
+                unreachable!();
+            };
+            assert!(
+                message.contains(expected),
+                "{message} should mention {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_reports_missing_and_unparsable_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = Utf8PathBuf::try_from(dir.path().join("viri.kdl")).unwrap();
+        assert!(matches!(Meta::open(&path), Err(MetaError::Io { .. })));
+        fs_err::write(&path, "garden \"unterminated").unwrap();
+        assert!(matches!(Meta::open(&path), Err(MetaError::Parse { .. })));
+    }
+
+    #[test]
+    fn write_fails_when_the_filesystem_rejects_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // A directory squatting on the tempfile path makes the write fail.
+        let path = Utf8PathBuf::try_from(dir.path().join("viri.kdl")).unwrap();
+        fs_err::create_dir(dir.path().join("viri.kdl.tmp")).unwrap();
+        let meta = Meta::parse(path.clone(), SAMPLE).unwrap();
+        assert!(matches!(meta.write(), Err(MetaError::Io { .. })));
+
+        // A directory on the final path makes the rename fail.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = Utf8PathBuf::try_from(dir.path().join("viri.kdl")).unwrap();
+        fs_err::create_dir(&path).unwrap();
+        let meta = Meta::parse(path.clone(), SAMPLE).unwrap();
+        assert!(matches!(meta.write(), Err(MetaError::Io { .. })));
+    }
+
+    #[test]
+    fn renders_property_entries_and_nested_children_of_extras() {
+        let text = concat!(
+            "garden \"ai\"\n\n",
+            "node \"qmplyuym\" {\n",
+            "    slug \"x\"\n",
+            "    created \"2026-11-20T14:46:41Z\"\n",
+            "    restaurant \"mama\" url=\"https://example.com\"\n",
+            "}\n",
+        );
+        let meta = Meta::parse("viri.kdl".into(), text).unwrap();
+        let out = meta.to_text();
+        assert!(
+            out.contains("restaurant \"mama\" url=\"https://example.com\""),
+            "{out}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod coverage {
+    use super::tests::SAMPLE;
+    use super::*;
+
+    #[test]
+    fn upserted_nodes_without_slug_or_created_render_without_them() {
+        let mut meta = Meta::parse("viri.kdl".into(), SAMPLE).unwrap();
+        let id: NodeId = "zzzzzzzk".parse().unwrap();
+        meta.upsert(NodeMeta {
+            id,
+            slug: None,
+            created: None,
+            tags: vec![],
+            parents: vec![],
+        });
+        let out = meta.to_text();
+        let block = out.split("node \"zzzzzzzk\"").nth(1).unwrap();
+        assert!(
+            !block.contains("slug") && !block.contains("created"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn non_string_extra_values_render_as_literals() {
+        let text = concat!(
+            "garden \"ai\"\n\n",
+            "node \"qmplyuym\" {\n",
+            "    slug \"x\"\n",
+            "    created \"2026-11-20T14:46:41Z\"\n",
+            "    seating 4\n",
+            "}\n",
+        );
+        let meta = Meta::parse("viri.kdl".into(), text).unwrap();
+        assert!(meta.to_text().contains("seating 4"), "{}", meta.to_text());
     }
 }

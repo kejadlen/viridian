@@ -71,7 +71,7 @@ fn buffers_round_trip_through_render_and_parse(tc: TestCase) {
         .draw(gs::vecs(id_gen()).max_size(3).unique(true))
         .into_iter()
         .collect();
-    let body = tc.draw(gs::from_regex("[a-zA-Z ,.!?\\n]{0,60}"));
+    let body = tc.draw(gs::from_regex("[ -~\n\t]{0,60}"));
 
     let meta = NodeMeta {
         id,
@@ -80,7 +80,7 @@ fn buffers_round_trip_through_render_and_parse(tc: TestCase) {
         tags,
         parents,
     };
-    let rendered = buffer::render(&buffer::Buffer::new(meta.clone(), body.clone()), &[]);
+    let rendered = buffer::render(&buffer::Buffer::new(meta.clone(), body.clone()));
     let parsed = buffer::parse(&rendered, &id).unwrap();
     assert_eq!(parsed.meta, meta);
     assert_eq!(parsed.body, body);
@@ -93,22 +93,155 @@ fn a_changed_id_is_always_rejected(tc: TestCase) {
     if id == other {
         return;
     }
-    let rendered = buffer::render(
-        &buffer::Buffer::new(
-            NodeMeta {
-                id,
-                slug: Some("x".to_owned()),
-                created: Some(viri_core::schema::now()),
-                tags: vec![],
-                parents: vec![],
-            },
-            String::new(),
-        ),
-        &[],
-    );
+    let rendered = buffer::render(&buffer::Buffer::new(
+        NodeMeta {
+            id,
+            slug: Some("x".to_owned()),
+            created: Some(viri_core::schema::now()),
+            tags: vec![],
+            parents: vec![],
+        },
+        String::new(),
+    ));
     let tampered = rendered.replace(&id.to_string(), &other.to_string());
     let errors = buffer::parse(&tampered, &id).unwrap_err();
     assert!(errors.iter().any(|e| e.path == "id"), "{errors:?}");
+}
+
+#[test]
+fn bodies_containing_frontmatter_fences_round_trip_verbatim(tc: TestCase) {
+    let id = node_id(&tc);
+    let pre = tc.draw(gs::from_regex("[a-zA-Z ,.!]{0,20}"));
+    let post = tc.draw(gs::from_regex("[a-zA-Z ,.!\n]{0,20}"));
+    let body = format!("{pre}\n---\n{post}");
+
+    let meta = NodeMeta {
+        id,
+        slug: Some("fenced".to_owned()),
+        created: Some(viri_core::schema::now()),
+        tags: vec![],
+        parents: vec![],
+    };
+    let rendered = buffer::render(&buffer::Buffer::new(meta, body.clone()));
+    let parsed = buffer::parse(&rendered, &id).unwrap();
+    assert_eq!(parsed.body, body, "the first fence closes the frontmatter");
+}
+
+#[test]
+fn fractional_timestamps_render_truncated_and_stay_truncated(tc: TestCase) {
+    let id = node_id(&tc);
+    let second = tc.draw(gs::integers::<i64>().min_value(0).max_value(4_102_444_800));
+    let nanosecond = tc.draw(gs::integers::<i32>().min_value(1).max_value(999_999_999));
+    let created = jiff::Timestamp::new(second, nanosecond).unwrap();
+    let truncated = jiff::Timestamp::from_second(second).unwrap();
+
+    let meta = NodeMeta {
+        id,
+        slug: Some("truncated".to_owned()),
+        created: Some(created),
+        tags: vec![],
+        parents: vec![],
+    };
+    let rendered = buffer::render(&buffer::Buffer::new(meta, String::new()));
+    let parsed = buffer::parse(&rendered, &id).unwrap();
+    assert_eq!(parsed.meta.created, Some(truncated));
+}
+
+#[test]
+fn flow_lists_and_block_lists_parse_identically(tc: TestCase) {
+    let id = node_id(&tc);
+    let tags: Vec<String> = tc
+        .draw(
+            gs::vecs(gs::from_regex("[a-z0-9-]{1,8}"))
+                .max_size(4)
+                .unique(true),
+        )
+        .into_iter()
+        .collect();
+    let parents: Vec<String> = tc
+        .draw(
+            gs::vecs(gs::from_regex("[k-z]{8}"))
+                .min_size(1)
+                .max_size(3)
+                .unique(true),
+        )
+        .into_iter()
+        .collect();
+
+    let mut block = String::from("---\n");
+    block.push_str(&format!(
+        "id: {id}\nslug: flow-vs-block\ncreated: 2026-11-20T14:46:41Z\n"
+    ));
+    if !tags.is_empty() {
+        block.push_str(&format!("tags: [{}]\n", tags.join(", ")));
+    }
+    block.push_str(&format!("parents: [{}]\n", parents.join(", ")));
+    block.push_str("---\n");
+
+    let mut spaced = block.clone();
+    if !tags.is_empty() {
+        let flow = format!("tags: [{}]\n", tags.join(", "));
+        let block_list = format!(
+            "tags:\n{}",
+            tags.iter()
+                .map(|t| format!("  - {t}\n"))
+                .collect::<String>()
+        );
+        spaced = spaced.replace(&flow, &block_list);
+    }
+    {
+        let flow = format!("parents: [{}]\n", parents.join(", "));
+        let block_list = format!(
+            "parents:\n{}",
+            parents
+                .iter()
+                .map(|p| format!("  - {p}\n"))
+                .collect::<String>()
+        );
+        spaced = spaced.replace(&flow, &block_list);
+    }
+
+    let from_flow = buffer::parse(&block, &id).unwrap();
+    let from_block = buffer::parse(&spaced, &id).unwrap();
+    assert_eq!(from_flow.meta.tags, from_block.meta.tags);
+    assert_eq!(from_flow.meta.parents, from_block.meta.parents);
+}
+
+#[test]
+fn tampered_frontmatter_is_rejected_at_the_offending_key(tc: TestCase) {
+    let id = node_id(&tc);
+    let mut text = buffer::render(&buffer::Buffer::new(
+        NodeMeta {
+            id,
+            slug: Some("x".to_owned()),
+            created: Some(viri_core::schema::now()),
+            tags: vec![],
+            parents: vec![],
+        },
+        String::new(),
+    ));
+    let corruption = tc.draw(gs::integers::<usize>().max_value(4));
+    match corruption {
+        0 => text = text.replacen("slug:", "wrong: none", 1),
+        1 => text = text.replacen("slug: x", "slug: x\nslug: y", 1),
+        2 => {
+            text = text.replacen("---\n", "", 1);
+        }
+        _ => {
+            text = text.replacen("slug:", "tags: not-a-list\nslug:", 1);
+        }
+    }
+    let errors = buffer::parse(&text, &id).unwrap_err();
+    let expected_path = match corruption {
+        0 => "wrong",
+        1 => "slug",
+        2 => "(buffer)",
+        _ => "tags",
+    };
+    assert!(
+        errors.iter().any(|e| e.path == expected_path),
+        "corruption {corruption} should flag `{expected_path}`, got {errors:?}"
+    );
 }
 
 fn id_gen() -> impl hegel::PrintableGenerator<NodeId> {

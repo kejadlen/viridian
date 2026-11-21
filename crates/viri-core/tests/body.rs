@@ -232,3 +232,209 @@ async fn reads_a_missing_body_as_empty() {
     let (_dir, bodies) = garden().await;
     assert_eq!(bodies.read_body(&nid("zkqpmzxy")).unwrap(), "");
 }
+
+#[tokio::test]
+async fn open_fails_outside_a_jj_repo() {
+    let dir = TempDir::new().unwrap();
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    assert!(matches!(
+        Bodies::open_with(settings(), &root).await,
+        Err(viri_core::body::BodiesError::Load(_))
+    ));
+}
+
+#[tokio::test]
+async fn read_body_fails_when_the_body_is_a_directory() {
+    let (dir, bodies) = garden().await;
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    fs_err::create_dir(root.join("zkqpmzxy harissa.viri")).unwrap();
+    assert!(matches!(
+        bodies.read_body(&nid("zkqpmzxy")),
+        Err(viri_core::body::BodiesError::Read { .. })
+    ));
+}
+
+#[tokio::test]
+async fn read_body_fails_on_a_non_utf8_file_name() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let (dir, bodies) = garden().await;
+    let name = std::ffi::OsStr::from_bytes(b"zkqpmzxy bad-\xff.viri");
+    fs_err::write(dir.path().join(name), "content").unwrap();
+    assert!(matches!(
+        bodies.read_body(&nid("zkqpmzxy")),
+        Err(viri_core::body::BodiesError::Load(_))
+    ));
+}
+
+#[tokio::test]
+async fn write_fails_when_the_workspace_has_no_working_copy() {
+    let dir = TempDir::new().unwrap();
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    Workspace::init_simple(&settings(), dir.path(), &WorkspaceNameBuf::from("default"))
+        .await
+        .unwrap();
+
+    let loader = DefaultWorkspaceLoaderFactory
+        .create(root.as_std_path())
+        .unwrap();
+    let workspace = loader
+        .load(
+            &settings(),
+            &jj_lib::default_backend_factories::default_backend_factories(),
+            &jj_lib::default_backend_factories::default_working_copy_factories(),
+        )
+        .unwrap();
+    let repo = workspace
+        .repo_loader()
+        .load_at_head(Some(workspace.workspace_name()))
+        .await
+        .unwrap();
+    let mut tx = repo.start_transaction();
+    tx.repo_mut()
+        .remove_workspace(workspace.workspace_name())
+        .await
+        .unwrap();
+    tx.repo_mut().rebase_descendants().await.unwrap();
+    tx.commit("forget working copy").await.unwrap();
+    drop(workspace);
+
+    let mut bodies = Bodies::open_with(settings(), &root).await.unwrap();
+    let id = nid("zkqpmzxy");
+    assert!(matches!(
+        bodies.write_body(&id, None, "harissa", "x\n", "new").await,
+        Err(viri_core::body::BodiesError::NoWorkingCopy)
+    ));
+}
+
+#[tokio::test]
+async fn a_concurrent_operation_reloads_the_working_copy() {
+    let (dir, mut a) = garden().await;
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    let mut b = Bodies::open_with(settings(), &root).await.unwrap();
+
+    // B advances the repo and the working-copy state past A's loaded head.
+    let sesame = nid("tsrqponm");
+    b.write_body(&sesame, None, "sesame-noodles", "n\n", "new")
+        .await
+        .unwrap();
+
+    // A still writes, reloading through B's operation.
+    let id = nid("zkqpmzxy");
+    a.write_body(&id, None, "harissa", "h\n", "new")
+        .await
+        .unwrap();
+    assert_eq!(a.read_body(&id).unwrap(), "h\n");
+    assert_eq!(
+        log(&a).await,
+        vec!["", "viri: new harissa", "viri: new sesame-noodles"]
+    );
+}
+
+#[tokio::test]
+async fn open_fails_when_the_repo_directory_is_broken() {
+    let dir = TempDir::new().unwrap();
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    Workspace::init_simple(&settings(), dir.path(), &WorkspaceNameBuf::from("default"))
+        .await
+        .unwrap();
+    fs_err::remove_dir_all(root.join(".jj").join("repo")).unwrap();
+    assert!(matches!(
+        Bodies::open_with(settings(), &root).await,
+        Err(viri_core::body::BodiesError::Load(_))
+    ));
+}
+
+#[tokio::test]
+async fn read_body_fails_when_two_files_claim_one_node() {
+    let (dir, bodies) = garden().await;
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    fs_err::write(root.join("zkqpmzxy one.viri"), "one").unwrap();
+    fs_err::write(root.join("zkqpmzxy two.viri"), "two").unwrap();
+    assert!(matches!(
+        bodies.read_body(&nid("zkqpmzxy")),
+        Err(viri_core::body::BodiesError::DuplicateBody { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_stale_working_copy_refuses_to_write() {
+    use jj_lib::backend::TreeValue;
+    use jj_lib::merged_tree_builder::MergedTreeBuilder;
+    use jj_lib::repo_path::RepoPathBuf;
+
+    let dir = TempDir::new().unwrap();
+    let root = Utf8PathBuf::try_from(dir.path().to_owned()).unwrap();
+    Workspace::init_simple(&settings(), dir.path(), &WorkspaceNameBuf::from("default"))
+        .await
+        .unwrap();
+
+    // Rewrite @'s tree and commit without updating the working-copy state,
+    // leaving the on-disk state a whole operation behind.
+    let loader = DefaultWorkspaceLoaderFactory
+        .create(root.as_std_path())
+        .unwrap();
+    let workspace = loader
+        .load(
+            &settings(),
+            &jj_lib::default_backend_factories::default_backend_factories(),
+            &jj_lib::default_backend_factories::default_working_copy_factories(),
+        )
+        .unwrap();
+    let repo = workspace
+        .repo_loader()
+        .load_at_head(Some(workspace.workspace_name()))
+        .await
+        .unwrap();
+    let wc = repo
+        .store()
+        .get_commit_async(
+            repo.view()
+                .get_wc_commit_id(workspace.workspace_name())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut tx = repo.start_transaction();
+    let mut builder = MergedTreeBuilder::new(wc.tree());
+    let path = RepoPathBuf::from_internal_string("uncommitted.txt").unwrap();
+    let content = "left behind\n";
+    let id = tx
+        .repo()
+        .store()
+        .write_file(&path, &mut content.as_bytes())
+        .await
+        .unwrap();
+    builder.set_or_remove(
+        path,
+        Some(TreeValue::File {
+            id,
+            executable: false,
+            copy_id: jj_lib::backend::CopyId::placeholder(),
+        }),
+    );
+    let tree = builder.write_tree().await.unwrap();
+    let rewritten = tx
+        .repo_mut()
+        .rewrite_commit(&wc)
+        .set_tree(tree)
+        .write()
+        .await
+        .unwrap();
+    tx.repo_mut()
+        .set_wc_commit(
+            workspace.workspace_name().to_owned(),
+            rewritten.id().clone(),
+        )
+        .unwrap();
+    tx.repo_mut().rebase_descendants().await.unwrap();
+    tx.commit("rewrite @ without checkout").await.unwrap();
+    drop(workspace);
+
+    let mut bodies = Bodies::open_with(settings(), &root).await.unwrap();
+    assert!(matches!(
+        bodies
+            .write_body(&nid("zkqpmzxy"), None, "harissa", "x\n", "new")
+            .await,
+        Err(viri_core::body::BodiesError::Stale)
+    ));
+}

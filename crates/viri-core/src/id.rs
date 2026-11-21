@@ -25,6 +25,16 @@ impl NodeId {
         NodeId(bytes)
     }
 
+    /// A fresh id absent from `used`, retrying on the unlikely collision.
+    pub fn generate_unused(used: &BTreeSet<NodeId>) -> NodeId {
+        // A 32-bit space with a handful of used ids always yields an
+        // unused one.
+        #[allow(clippy::expect_used)]
+        return std::iter::repeat_with(NodeId::generate)
+            .find(|id| !used.contains(id))
+            .expect("a 32-bit space always yields an unused id");
+    }
+
     pub fn from_bytes(bytes: [u8; BYTES]) -> NodeId {
         NodeId(bytes)
     }
@@ -81,7 +91,9 @@ impl std::str::FromStr for NodeId {
 
 fn from_alphabet(c: Option<u8>) -> Result<u8, InvalidNodeId> {
     let Some(c) = c else {
-        return Err(InvalidNodeId);
+        // The caller checks the length before chunking, so every chunk has
+        // both characters.
+        return Err(InvalidNodeId); // cov-excl-line
     };
     let nibble = ALPHABET.iter().position(|a| *a == c).ok_or(InvalidNodeId)?;
     u8::try_from(nibble).map_err(|_| InvalidNodeId)

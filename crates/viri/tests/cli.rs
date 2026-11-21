@@ -249,3 +249,310 @@ fn show_reports_an_unknown_prefix() {
         .failure()
         .stderr(predicates::str::contains("no node id starts with `w`"));
 }
+
+/// An "editor" that quits without touching the buffer.
+fn noop_editor(dir: &TempDir) -> Utf8PathBuf {
+    script(dir, "noop.sh", "#!/bin/sh\nexit 0\n")
+}
+
+fn script(dir: &TempDir, name: &str, body: &str) -> Utf8PathBuf {
+    let path = dir.path().join(name);
+    fs_err::write(&path, body).unwrap();
+    let mut perms = fs_err::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs_err::set_permissions(&path, perms).unwrap();
+    Utf8PathBuf::try_from(path).unwrap()
+}
+
+#[test]
+fn edit_with_an_untouched_valid_buffer_is_a_noop() {
+    let (dir, root) = garden();
+    let meta_before = fs_err::read_to_string(root.join("viri.kdl")).unwrap();
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", noop_editor(&dir))
+        .assert()
+        .success();
+    assert_eq!(
+        fs_err::read_to_string(root.join("viri.kdl")).unwrap(),
+        meta_before
+    );
+}
+
+#[test]
+fn edit_uses_editor_when_visual_is_unset() {
+    let (dir, root) = garden();
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env_remove("VISUAL")
+        .env("EDITOR", noop_editor(&dir))
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_missing_editor_program_fails_loudly() {
+    let (_dir, root) = garden();
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", "/nonexistent-viri-editor")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("failed to start the editor"));
+}
+
+#[test]
+fn new_reopens_the_editor_after_parse_errors() {
+    let (dir, root) = garden();
+    let editor = script(
+        &dir,
+        "break-then-fix.sh",
+        concat!(
+            "#!/bin/sh\n",
+            "stamp=$(dirname \"$0\")/invoked\n",
+            "if [ ! -f \"$stamp\" ]; then\n",
+            "    touch \"$stamp\"\n",
+            "    sed -i 's/^slug:$/broken line without a colon/' \"$1\"\n",
+            "else\n",
+            "    sed -i 's/^broken line without a colon$/slug: second-round/' \"$1\"\n",
+            "fi\n",
+        ),
+    );
+    cmd()
+        .args(["new"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", &editor)
+        .assert()
+        .success();
+    let meta = fs_err::read_to_string(root.join("viri.kdl")).unwrap();
+    assert!(meta.contains("slug \"second-round\""), "{meta}");
+}
+
+#[test]
+fn quitting_with_parse_errors_keeps_a_recovery_file() {
+    let (dir, root) = garden();
+    let editor = script(
+        &dir,
+        "break-only.sh",
+        "#!/bin/sh\nsed -i 's/^slug:$/broken line/' \"$1\"\n",
+    );
+    cmd()
+        .args(["new"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", &editor)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("recovery"));
+    let recovery = root.join(".viri").join("recovery");
+    let saved_entry = fs_err::read_dir(&recovery)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let saved_path = Utf8PathBuf::try_from(saved_entry.path()).unwrap();
+    let saved = fs_err::read_to_string(&saved_path).unwrap();
+    assert!(saved.contains("broken line"), "{saved}");
+}
+
+#[test]
+fn a_recovery_failure_reports_the_lost_buffer() {
+    let (dir, root) = garden();
+    fs_err::write(root.join(".viri"), "a file, not a directory").unwrap();
+    cmd()
+        .args(["new"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", noop_editor(&dir))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "could not write the recovery file",
+        ));
+}
+
+#[test]
+fn the_gitignore_gain_appends_after_a_missing_newline() {
+    let (dir, root) = garden();
+    fs_err::write(root.join(".gitignore"), "target").unwrap();
+    cmd()
+        .args(["new"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", noop_editor(&dir))
+        .assert()
+        .failure();
+    let gitignore = fs_err::read_to_string(root.join(".gitignore")).unwrap();
+    assert_eq!(gitignore, "target\n.viri/\n");
+}
+
+#[test]
+fn ls_outside_a_garden_fails() {
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args(["ls"])
+        .current_dir(dir.path())
+        .env_remove("VISUAL")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no garden found"));
+}
+
+#[test]
+fn a_garden_flag_without_viri_kdl_fails() {
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args(["ls"])
+        .arg("--garden")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no garden found"));
+}
+
+#[test]
+fn an_editor_that_exits_nonzero_fails() {
+    let (_dir, root) = garden();
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", "/bin/false")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("the editor exited with"));
+}
+
+#[test]
+fn vi_is_the_last_resort_editor() {
+    let (dir, root) = garden();
+    let bin = dir.path().join("bin");
+    fs_err::create_dir(&bin).unwrap();
+    let fake_vi = script(&dir, "bin/vi", "#!/bin/sh\nexit 0\n");
+    let _ = fake_vi;
+    let path = format!(
+        "{}:{}",
+        bin.to_str().unwrap(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .env("PATH", path)
+        .assert()
+        .success();
+}
+
+#[test]
+fn a_buffer_that_loses_its_fence_self_heals() {
+    let (dir, root) = garden();
+    let editor = script(
+        &dir,
+        "drop-fence.sh",
+        concat!(
+            "#!/bin/sh\n",
+            "stamp=$(dirname \"$0\")/dropped\n",
+            "if [ ! -f \"$stamp\" ]; then\n",
+            "    touch \"$stamp\"\n",
+            "    sed -i '1d' \"$1\"\n",
+            "fi\n",
+        ),
+    );
+    let before = fs_err::read_to_string(root.join("viri.kdl")).unwrap();
+    // Deleting the opening fence makes the buffer unparseable; inject
+    // restores it, and the untouched second round saves the same node.
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", &editor)
+        .assert()
+        .success();
+    assert_eq!(
+        fs_err::read_to_string(root.join("viri.kdl")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn the_gitignore_gain_appends_after_a_trailing_newline() {
+    let (dir, root) = garden();
+    fs_err::write(root.join(".gitignore"), "target\n").unwrap();
+    cmd()
+        .args(["new"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", noop_editor(&dir))
+        .assert()
+        .failure();
+    let gitignore = fs_err::read_to_string(root.join(".gitignore")).unwrap();
+    assert_eq!(gitignore, "target\n.viri/\n");
+}
+
+#[test]
+fn a_non_utf8_working_directory_fails_cleanly() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = TempDir::new().unwrap();
+    let weird = dir.path().join(std::ffi::OsStr::from_bytes(b"bad-\xff"));
+    fs_err::create_dir(&weird).unwrap();
+    // A garden sits at the non-UTF-8 path itself, so the walk finds it
+    // but cannot express it.
+    fs_err::write(weird.join("viri.kdl"), "garden \"x\"\n").unwrap();
+    cmd()
+        .args(["ls"])
+        .current_dir(&weird)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no garden found"));
+}
+
+#[test]
+fn a_changed_but_invalid_buffer_reopens_and_recovers() {
+    let (dir, root) = garden();
+    let editor = script(
+        &dir,
+        "validate-fail.sh",
+        concat!(
+            "#!/bin/sh\n",
+            "stamp=$(dirname \"$0\")/invalid\n",
+            "if [ ! -f \"$stamp\" ]; then\n",
+            "    touch \"$stamp\"\n",
+            "    sed -i 's/^slug: harissa$/slug: Not-Kebab/' \"$1\"\n",
+            "fi\n",
+        ),
+    );
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", &editor)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("recovery"));
+    let meta = fs_err::read_to_string(root.join("viri.kdl")).unwrap();
+    assert!(meta.contains("slug \"harissa\""), "{meta}");
+}
+
+#[test]
+fn empty_editor_variables_have_no_editor() {
+    let (_dir, root) = garden();
+    cmd()
+        .args(["edit", "z"])
+        .arg("--garden")
+        .arg(&root)
+        .env("VISUAL", "")
+        .env("EDITOR", "")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no editor to run"));
+}

@@ -119,6 +119,15 @@ mod tests {
     }
 
     #[test]
+    fn new_nodes_start_without_a_slug_at_a_truncated_now() {
+        let meta = NodeMeta::new("zkqpmzxy".parse().unwrap());
+        assert_eq!(meta.slug, None);
+        let created = meta.created.unwrap();
+        assert_eq!(created.subsec_nanosecond(), 0);
+        assert_eq!(now().subsec_nanosecond(), 0);
+    }
+
+    #[test]
     fn valid_meta_has_no_errors() {
         let known = BTreeSet::from(["qmplyuym".parse().unwrap()]);
         assert!(

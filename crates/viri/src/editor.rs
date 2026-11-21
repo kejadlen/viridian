@@ -24,7 +24,7 @@ pub fn run(
     start: buffer::Buffer,
     expected_id: &NodeId,
 ) -> Result<buffer::Buffer, EditorError> {
-    let mut text = buffer::render(&start, &[]);
+    let mut text = buffer::render(&start);
     loop {
         let file = NamedTempFile::with_suffix(".viri")?;
         fs_err::write(file.path(), &text)?;
@@ -100,9 +100,10 @@ fn run_editor(path: &std::path::Path) -> Result<(), EditorError> {
     Ok(())
 }
 
-/// Inserts validation errors as comments at the top of the frontmatter.
+/// Inserts validation errors as comments at the top of the frontmatter,
+/// inside the opening fence, where parsing skips them.
 fn inject(text: &str, errors: &[ValidationError]) -> String {
-    let mut out = String::new();
+    let mut out = String::from("---\n");
     out.push_str(&format!(
         "# viri: {} error(s), fix them and save again\n",
         errors.len()
@@ -111,7 +112,6 @@ fn inject(text: &str, errors: &[ValidationError]) -> String {
         out.push_str(&format!("# {error}\n"));
     }
     if let Some(rest) = text.strip_prefix("---\n") {
-        out.push_str("---\n");
         out.push_str(rest);
     } else {
         out.push_str(text);
@@ -134,7 +134,7 @@ fn save_recovery(garden_root: &Utf8Path, id: &NodeId, text: &str, errors: usize)
             }
             updated.push_str(".viri/\n");
             fs_err::write(&gitignore, updated)?;
-        }
+        } // cov-excl-line -- a closing-brace region the compiler never counts; the Ok(()) below carries it
         Ok(())
     })();
     match result {
@@ -188,4 +188,20 @@ pub enum EditorError {
     #[error(transparent)]
     #[diagnostic(code(viri::editor::io))]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn injected_errors_stay_inside_the_opening_fence() {
+        let errors = vec![viri_core::schema::ValidationError::new("slug", "required")];
+        let text = inject("---\nid: zkqpmzxy\n---\nbody\n", &errors);
+        assert!(text.starts_with("---\n# viri: 1 error(s)"), "{text}");
+        // The injected buffer must still parse, so the next editor round
+        // starts from a valid buffer.
+        let id: viri_core::NodeId = "zkqpmzxy".parse().unwrap();
+        assert!(crate::buffer::parse(&text, &id).is_ok());
+    }
 }

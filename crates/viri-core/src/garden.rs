@@ -64,12 +64,7 @@ impl Garden {
 
     /// A fresh id the garden doesn't use yet.
     pub fn generate_id(&self) -> NodeId {
-        loop {
-            let id = NodeId::generate();
-            if !self.ids().contains(&id) {
-                return id;
-            }
-        }
+        NodeId::generate_unused(&self.ids())
     }
 
     /// Loads a node: metadata plus body. The body is empty when the body file

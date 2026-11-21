@@ -18,5 +18,6 @@ thiserror.workspace = true
 workspace = true
 
 [dev-dependencies]
+hegeltest.workspace = true
 tempfile.workspace = true
 tokio = { version = "*", features = ["rt-multi-thread", "macros"] }

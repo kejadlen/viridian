@@ -19,19 +19,9 @@ impl Buffer {
     }
 }
 
-/// Renders a buffer, optionally with validation errors injected as comments
-/// at the top of the frontmatter.
-pub fn render(buffer: &Buffer, errors: &[ValidationError]) -> String {
+/// Renders a buffer as frontmatter plus body.
+pub fn render(buffer: &Buffer) -> String {
     let mut out = String::from("---\n");
-    if !errors.is_empty() {
-        out.push_str(&format!(
-            "# viri: {} error(s), fix them and save again\n",
-            errors.len()
-        ));
-        for error in errors {
-            out.push_str(&format!("# {error}\n"));
-        }
-    }
     out.push_str(&format!("id: {}\n", buffer.meta.id));
     match buffer.meta.slug.as_deref() {
         Some(slug) => out.push_str(&format!("slug: {slug}\n")),
@@ -257,4 +247,137 @@ fn unquote(value: &str, errors: &mut Vec<ValidationError>) -> String {
         ));
     }
     value.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(super) fn id() -> NodeId {
+        "zkqpmzxy".parse().unwrap()
+    }
+
+    pub(super) fn errors_of(text: &str) -> Vec<ValidationError> {
+        parse(text, &id()).unwrap_err()
+    }
+
+    #[test]
+    fn renders_a_node_without_a_slug_or_created() {
+        let meta = NodeMeta {
+            id: id(),
+            slug: None,
+            created: None,
+            tags: vec![],
+            parents: vec![],
+        };
+        let text = render(&Buffer::new(meta, String::new()));
+        assert!(text.contains("slug:\n"), "{text}");
+        assert!(text.contains("created:\n"), "{text}");
+    }
+
+    #[test]
+    fn rejects_an_orphan_list_item() {
+        let errors = errors_of("---\nslug: x\n  - stray\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "line 3" && e.message.contains("no list above it")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_line_without_a_colon() {
+        let errors = errors_of("---\nnonsense\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "line 2" && e.message.contains("key: value")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unparsable_id() {
+        let errors = errors_of("---\nid: nope!\nslug: x\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "id" && e.message.contains("not a node id")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_an_empty_created() {
+        let parsed = parse("---\nslug: x\ncreated:\n---\nbody\n", &id()).unwrap();
+        assert_eq!(parsed.meta.created, None);
+        assert_eq!(parsed.body, "body\n");
+    }
+
+    #[test]
+    fn rejects_an_unparsable_parent() {
+        let errors = errors_of("---\nslug: x\nparents:\n  - nope\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "parents[0]" && e.message.contains("not a node id")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unquotable_whitespace_value() {
+        let errors = errors_of("---\nslug: two words\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "(buffer)" && e.message.contains("whitespace")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_quoted_values() {
+        let parsed = parse("---\nslug: \"two words\"\n---\n", &id()).unwrap();
+        assert_eq!(parsed.meta.slug.as_deref(), Some("two words"));
+    }
+}
+
+#[cfg(test)]
+mod coverage {
+    use super::tests::*;
+
+    #[test]
+    fn rejects_a_missing_closing_fence() {
+        let errors = errors_of("---\nslug: x\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("no closing `---`")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_ends_a_list() {
+        let errors = errors_of("---\ntags:\n\n  - orphan\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("no list above it")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unparsable_created() {
+        let errors = errors_of("---\nslug: x\ncreated: not-a-time\n---\n");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "created" && e.message.contains("RFC 3339")),
+            "{errors:?}"
+        );
+    }
 }
