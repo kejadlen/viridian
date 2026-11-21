@@ -1,0 +1,4 @@
+# Link with lld instead of BFD ld: the 1GB build container OOMs linking
+# jj-lib's dependency tree with the default linker.
+[build]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

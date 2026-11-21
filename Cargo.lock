@@ -3021,6 +3021,7 @@ dependencies = [
  "fs-err",
  "futures",
  "getrandom",
+ "hegeltest",
  "jiff",
  "jj-lib",
  "kdl",
