@@ -51,7 +51,7 @@ fn shortest_prefixes_resolve_back_to_their_id(tc: TestCase) {
     }
     for id in &ids {
         let prefix = shortest_prefix(id, &ids);
-        assert!(prefix.len() <= 8);
+        assert!(prefix.as_str().len() <= 8);
         assert_eq!(resolve_prefix(&prefix, &ids).unwrap(), *id);
     }
 }

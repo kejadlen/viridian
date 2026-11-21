@@ -9,6 +9,7 @@ use miette::Diagnostic;
 use thiserror::Error;
 use viri_core::Garden;
 use viri_core::Node;
+use viri_core::id::Prefix;
 use viri_core::schema::NodeMeta;
 
 use crate::buffer::Buffer;
@@ -31,19 +32,19 @@ pub enum Command {
     New {
         /// Parent node id prefixes
         #[arg(value_name = "PREFIX")]
-        parents: Vec<String>,
+        parents: Vec<Prefix>,
     },
     /// Edit a node in $VISUAL or $EDITOR
     Edit {
         /// The node to edit
-        prefix: String,
+        prefix: Prefix,
     },
     /// List nodes: short ids, slugs, and tags
     Ls,
     /// Print a node in the edit buffer's format
     Show {
         /// The node to print
-        prefix: String,
+        prefix: Prefix,
     },
     #[command(name = "__internal", hide = true)]
     Internal {
@@ -99,7 +100,7 @@ fn ls(garden: &Garden) {
     }
 }
 
-async fn show(garden: &Garden, prefix: &str) -> Result<(), miette::Report> {
+async fn show(garden: &Garden, prefix: &Prefix) -> Result<(), miette::Report> {
     let id = garden.resolve(prefix)?;
     let node = garden.load(&id).await?;
     print!(
@@ -109,7 +110,7 @@ async fn show(garden: &Garden, prefix: &str) -> Result<(), miette::Report> {
     Ok(())
 }
 
-async fn new(garden: &mut Garden, parents: &[String]) -> Result<(), miette::Report> {
+async fn new(garden: &mut Garden, parents: &[Prefix]) -> Result<(), miette::Report> {
     let id = garden.generate_id();
     let mut meta = NodeMeta::new(id);
     for prefix in parents {
@@ -135,7 +136,7 @@ async fn new(garden: &mut Garden, parents: &[String]) -> Result<(), miette::Repo
     Ok(())
 }
 
-async fn edit(garden: &mut Garden, prefix: &str) -> Result<(), miette::Report> {
+async fn edit(garden: &mut Garden, prefix: &Prefix) -> Result<(), miette::Report> {
     let id = garden.resolve(prefix)?;
     let node = garden.load(&id).await?;
     let old_slug = node.meta.slug.clone();

@@ -250,6 +250,19 @@ fn show_reports_an_unknown_prefix() {
         .stderr(predicates::str::contains("no node id starts with `w`"));
 }
 
+#[test]
+fn show_rejects_a_malformed_prefix() {
+    let (_dir, root) = garden();
+    cmd()
+        .args(["show", "ZK"])
+        .arg("--garden")
+        .arg(&root)
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("invalid value 'ZK'"))
+        .stderr(predicates::str::contains("invalid node id prefix"));
+}
+
 /// An "editor" that quits without touching the buffer.
 fn noop_editor(dir: &TempDir) -> Utf8PathBuf {
     script(dir, "noop.sh", "#!/bin/sh\nexit 0\n")

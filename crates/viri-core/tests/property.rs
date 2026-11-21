@@ -22,6 +22,7 @@ use hegel::test;
 use jiff::Timestamp;
 use tempfile::TempDir;
 use viri_core::id::NodeId;
+use viri_core::id::Prefix;
 use viri_core::id::PrefixError;
 use viri_core::id::resolve_prefix;
 use viri_core::id::shortest_prefix;
@@ -105,12 +106,26 @@ fn ids_of_the_wrong_length_are_rejected(tc: TestCase) {
 // --- id: prefix resolution --------------------------------------------------
 
 #[test]
+fn prefixes_parse_exactly_when_they_are_one_to_eight_alphabet_characters(tc: TestCase) {
+    // `j` and `K` sit just outside the alphabet k-z.
+    let text = tc.draw(gs::from_regex("[jk-zK]{0,10}"));
+    let valid = (1..=8).contains(&text.len()) && text.bytes().all(|b| (b'k'..=b'z').contains(&b));
+    match text.parse::<Prefix>() {
+        Ok(prefix) => {
+            assert!(valid, "{text:?} should be invalid");
+            assert_eq!(prefix.to_string(), text);
+        }
+        Err(_) => assert!(!valid, "{text:?} should be valid"),
+    }
+}
+
+#[test]
 fn prefix_resolution_agrees_with_the_matches_it_names(tc: TestCase) {
     let ids = tc.draw(id_set_gen());
-    let prefix = tc.draw(gs::from_regex("[k-z]{0,9}"));
+    let prefix: Prefix = tc.draw(gs::from_regex("[k-z]{1,8}")).parse().unwrap();
     let matches: Vec<NodeId> = ids
         .iter()
-        .filter(|id| id.to_string().starts_with(&prefix))
+        .filter(|id| id.to_string().starts_with(prefix.as_str()))
         .copied()
         .collect();
     match resolve_prefix(&prefix, &ids) {
@@ -130,31 +145,6 @@ fn prefix_resolution_agrees_with_the_matches_it_names(tc: TestCase) {
 }
 
 #[test]
-fn the_empty_prefix_matches_every_id(tc: TestCase) {
-    let ids = tc.draw(id_set_gen());
-    match ids.len() {
-        0 => assert_eq!(
-            resolve_prefix("", &ids).unwrap_err(),
-            PrefixError::NotFound(String::new())
-        ),
-        1 => {
-            let only = *ids.iter().next().unwrap();
-            assert_eq!(resolve_prefix("", &ids).unwrap(), only);
-        }
-        _ => {
-            let matches: Vec<NodeId> = ids.iter().copied().collect();
-            assert_eq!(
-                resolve_prefix("", &ids).unwrap_err(),
-                PrefixError::Ambiguous {
-                    prefix: String::new(),
-                    matches,
-                }
-            );
-        }
-    }
-}
-
-#[test]
 fn shortest_prefixes_are_minimal(tc: TestCase) {
     let ids = tc.draw(id_set_gen());
     if ids.is_empty() {
@@ -162,9 +152,9 @@ fn shortest_prefixes_are_minimal(tc: TestCase) {
     }
     let id = tc.draw(gs::sampled_from(ids.iter().copied().collect::<Vec<_>>()));
     let prefix = shortest_prefix(&id, &ids);
+    let prefix = prefix.as_str();
     assert!(prefix.len() <= 8);
     if let Some(shorter) = prefix
-        .as_str()
         .get(..prefix.len().saturating_sub(1))
         .filter(|s| !s.is_empty())
     {

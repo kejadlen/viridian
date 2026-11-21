@@ -53,10 +53,8 @@ impl NodeId {
         out
     }
 
-    /// Whether this id starts with `prefix`.
-    fn starts_with(&self, prefix: &str) -> bool {
-        let encoded = self.encoded();
-        encoded.starts_with(prefix.as_bytes())
+    fn starts_with(&self, prefix: &Prefix) -> bool {
+        self.encoded().starts_with(prefix.0.as_bytes())
     }
 }
 
@@ -104,48 +102,83 @@ fn from_alphabet(c: Option<u8>) -> Result<u8, InvalidNodeId> {
 #[diagnostic(code(viri_core::id::invalid))]
 pub struct InvalidNodeId;
 
+/// The start of a node id: one to eight characters from `ALPHABET`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Prefix(String);
+
+impl Prefix {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for Prefix {
+    type Err = InvalidPrefix;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let in_alphabet = s.bytes().all(|b| ALPHABET.contains(&b));
+        if (1..=BYTES * 2).contains(&s.len()) && in_alphabet {
+            Ok(Prefix(s.to_owned()))
+        } else {
+            Err(InvalidPrefix)
+        }
+    }
+}
+
+#[derive(Error, Diagnostic, Debug)]
+#[error("invalid node id prefix: expected one to eight characters from the alphabet k-z")]
+#[diagnostic(code(viri_core::id::invalid_prefix))]
+pub struct InvalidPrefix;
+
 /// The shortest prefix of `id` that matches no other id in `ids`.
 ///
 /// `ids` must contain `id`. The returned prefix has at least one character;
 /// eight only when `ids` also holds an id sharing all but its last character.
-pub fn shortest_prefix(id: &NodeId, ids: &BTreeSet<NodeId>) -> String {
+pub fn shortest_prefix(id: &NodeId, ids: &BTreeSet<NodeId>) -> Prefix {
     let s = id.to_string();
     for len in 1..s.len() {
+        let prefix = Prefix(s[..len].to_owned());
         let unique = ids
             .iter()
-            .all(|other| other == id || !other.starts_with(&s[..len]));
+            .all(|other| other == id || !other.starts_with(&prefix));
         if unique {
-            return s[..len].to_owned();
+            return prefix;
         }
     }
-    s
+    Prefix(s)
 }
 
 #[derive(Error, Diagnostic, Debug, PartialEq)]
 pub enum PrefixError {
     #[error("no node id starts with `{0}`")]
     #[diagnostic(code(viri_core::id::unresolved))]
-    NotFound(String),
+    NotFound(Prefix),
     #[error("`{prefix}` matches several node ids: {}", matches.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
     #[diagnostic(code(viri_core::id::ambiguous), help("use a longer prefix"))]
     Ambiguous {
-        prefix: String,
+        prefix: Prefix,
         matches: Vec<NodeId>,
     },
 }
 
 /// Resolves a prefix to the unique node id it matches in `ids`.
-pub fn resolve_prefix(prefix: &str, ids: &BTreeSet<NodeId>) -> Result<NodeId, PrefixError> {
+pub fn resolve_prefix(prefix: &Prefix, ids: &BTreeSet<NodeId>) -> Result<NodeId, PrefixError> {
     let matches: Vec<NodeId> = ids
         .iter()
         .copied()
         .filter(|id| id.starts_with(prefix))
         .collect();
     match matches.as_slice() {
-        [] => Err(PrefixError::NotFound(prefix.to_owned())),
+        [] => Err(PrefixError::NotFound(prefix.clone())),
         [id] => Ok(*id),
         _ => Err(PrefixError::Ambiguous {
-            prefix: prefix.to_owned(),
+            prefix: prefix.clone(),
             matches,
         }),
     }
@@ -182,29 +215,49 @@ mod tests {
         assert_eq!(id("zkzkzkzk").to_string(), "zkzkzkzk");
     }
 
+    fn prefix(s: &str) -> Prefix {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn parses_prefixes_of_one_to_eight_alphabet_characters() {
+        for good in ["z", "k", "zkqpmzxy"] {
+            assert_eq!(prefix(good).as_str(), good);
+        }
+        for bad in ["", "zkqpmzxyz", "ZK", "zj", "abc", "z k"] {
+            assert!(bad.parse::<Prefix>().is_err(), "{bad:?} should be invalid");
+        }
+    }
+
     #[test]
     fn resolves_unique_prefixes() {
         let ids = BTreeSet::from([id("zkqpmzxy"), id("zkqpmlmn"), id("tsrqponm")]);
-        assert_eq!(resolve_prefix("tsr", &ids).unwrap(), id("tsrqponm"));
-        assert_eq!(resolve_prefix("zkqpmzx", &ids).unwrap(), id("zkqpmzxy"));
         assert_eq!(
-            resolve_prefix("zkqpm", &ids).unwrap_err(),
+            resolve_prefix(&prefix("tsr"), &ids).unwrap(),
+            id("tsrqponm")
+        );
+        assert_eq!(
+            resolve_prefix(&prefix("zkqpmzx"), &ids).unwrap(),
+            id("zkqpmzxy")
+        );
+        assert_eq!(
+            resolve_prefix(&prefix("zkqpm"), &ids).unwrap_err(),
             PrefixError::Ambiguous {
-                prefix: "zkqpm".to_owned(),
+                prefix: prefix("zkqpm"),
                 matches: vec![id("zkqpmzxy"), id("zkqpmlmn")],
             }
         );
         assert_eq!(
-            resolve_prefix("w", &ids).unwrap_err(),
-            PrefixError::NotFound("w".to_owned())
+            resolve_prefix(&prefix("w"), &ids).unwrap_err(),
+            PrefixError::NotFound(prefix("w"))
         );
     }
 
     #[test]
     fn shortest_prefix_needs_only_as_many_chars_as_necessary() {
         let ids = BTreeSet::from([id("zkqpmzxy"), id("tsrqponm")]);
-        assert_eq!(shortest_prefix(&id("zkqpmzxy"), &ids), "z");
+        assert_eq!(shortest_prefix(&id("zkqpmzxy"), &ids), prefix("z"));
         let ids = BTreeSet::from([id("zkqpmzxy"), id("zkqpmzxx")]);
-        assert_eq!(shortest_prefix(&id("zkqpmzxy"), &ids), "zkqpmzxy");
+        assert_eq!(shortest_prefix(&id("zkqpmzxy"), &ids), prefix("zkqpmzxy"));
     }
 }

@@ -11,6 +11,7 @@ use crate::body::Bodies;
 use crate::body::BodiesError;
 use crate::id;
 use crate::id::NodeId;
+use crate::id::Prefix;
 use crate::id::PrefixError;
 use crate::meta::Meta;
 use crate::meta::MetaError;
@@ -53,12 +54,12 @@ impl Garden {
     }
 
     /// The shortest prefix of `id` unique within the garden.
-    pub fn shortest_prefix(&self, id: &NodeId) -> String {
+    pub fn shortest_prefix(&self, id: &NodeId) -> Prefix {
         id::shortest_prefix(id, &self.ids())
     }
 
     /// Resolves a prefix to the unique node it names.
-    pub fn resolve(&self, prefix: &str) -> Result<NodeId, PrefixError> {
+    pub fn resolve(&self, prefix: &Prefix) -> Result<NodeId, PrefixError> {
         id::resolve_prefix(prefix, &self.ids())
     }
 
