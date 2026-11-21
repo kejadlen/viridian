@@ -45,18 +45,40 @@ pub enum Command {
         /// The node to print
         prefix: String,
     },
+    #[command(name = "__internal", hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: Internal,
+    },
 }
 
+/// Commands for tooling rather than people.
+#[derive(Subcommand)]
+pub enum Internal {
+    /// Print the agent guide for this build of viri
+    Skill,
+}
+
+/// The guide `viri __internal skill` prints, kept in the binary so it
+/// matches the commands this build has.
+pub const SKILL_GUIDE: &str = include_str!("skill.md");
+
 pub async fn run(cli: Cli) -> Result<(), miette::Report> {
-    let root = find_garden(cli.garden)?;
-    let mut garden = Garden::open(&root).await?;
     match cli.command {
-        Command::Ls => ls(&garden),
-        Command::Show { prefix } => show(&garden, &prefix).await?,
-        Command::New { parents } => new(&mut garden, &parents).await?,
-        Command::Edit { prefix } => edit(&mut garden, &prefix).await?,
+        Command::Internal {
+            command: Internal::Skill,
+        } => print!("{SKILL_GUIDE}"),
+        Command::Ls => ls(&open(cli.garden).await?),
+        Command::Show { prefix } => show(&open(cli.garden).await?, &prefix).await?,
+        Command::New { parents } => new(&mut open(cli.garden).await?, &parents).await?,
+        Command::Edit { prefix } => edit(&mut open(cli.garden).await?, &prefix).await?,
     }
     Ok(())
+}
+
+async fn open(explicit: Option<PathBuf>) -> Result<Garden, miette::Report> {
+    let root = find_garden(explicit)?;
+    Ok(Garden::open(&root).await?)
 }
 
 fn ls(garden: &Garden) {

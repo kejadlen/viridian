@@ -557,3 +557,37 @@ fn empty_editor_variables_have_no_editor() {
         .failure()
         .stderr(predicates::str::contains("no editor to run"));
 }
+
+#[test]
+fn skill_prints_the_guide_outside_a_garden() {
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args(["__internal", "skill"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(viri::cli::SKILL_GUIDE);
+}
+
+#[test]
+fn the_skill_guide_covers_every_command() {
+    use clap::CommandFactory;
+    let cli = viri::cli::Cli::command();
+    for sub in cli.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+        let usage = format!("`viri {}", sub.get_name());
+        assert!(
+            viri::cli::SKILL_GUIDE.contains(&usage),
+            "the guide never shows {usage}`"
+        );
+    }
+}
+
+#[test]
+fn the_internal_command_is_hidden_from_help() {
+    use predicates::boolean::PredicateBooleanExt;
+    cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("__internal").not());
+}
