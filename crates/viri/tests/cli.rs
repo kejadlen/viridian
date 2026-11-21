@@ -93,7 +93,7 @@ fn slug_editor(dir: &TempDir, slug: &str) -> Utf8PathBuf {
     let path = dir.path().join("fill-slug.sh");
     fs_err::write(
         &path,
-        format!("#!/bin/sh\nsed -i 's/^slug:$/slug: {slug}/' \"$1\"\n"),
+        format!("#!/bin/sh\nsed -i.bak 's/^slug:$/slug: {slug}/' \"$1\" && rm \"$1.bak\"\n"),
     )
     .unwrap();
     let mut perms = fs_err::metadata(&path).unwrap().permissions();
@@ -201,7 +201,7 @@ fn edit_renames_a_stale_slug() {
     let rename = dir.path().join("rename.sh");
     fs_err::write(
         &rename,
-        "#!/bin/sh\nsed -i 's/^slug: harissa$/slug: harissa-paste/' \"$1\"\n",
+        "#!/bin/sh\nsed -i.bak 's/^slug: harissa$/slug: harissa-paste/' \"$1\" && rm \"$1.bak\"\n",
     )
     .unwrap();
     let mut perms = fs_err::metadata(&rename).unwrap().permissions();
@@ -318,9 +318,9 @@ fn new_reopens_the_editor_after_parse_errors() {
             "stamp=$(dirname \"$0\")/invoked\n",
             "if [ ! -f \"$stamp\" ]; then\n",
             "    touch \"$stamp\"\n",
-            "    sed -i 's/^slug:$/broken line without a colon/' \"$1\"\n",
+            "    sed -i.bak 's/^slug:$/broken line without a colon/' \"$1\" && rm \"$1.bak\"\n",
             "else\n",
-            "    sed -i 's/^broken line without a colon$/slug: second-round/' \"$1\"\n",
+            "    sed -i.bak 's/^broken line without a colon$/slug: second-round/' \"$1\" && rm \"$1.bak\"\n",
             "fi\n",
         ),
     );
@@ -341,7 +341,7 @@ fn quitting_with_parse_errors_keeps_a_recovery_file() {
     let editor = script(
         &dir,
         "break-only.sh",
-        "#!/bin/sh\nsed -i 's/^slug:$/broken line/' \"$1\"\n",
+        "#!/bin/sh\nsed -i.bak 's/^slug:$/broken line/' \"$1\" && rm \"$1.bak\"\n",
     );
     cmd()
         .args(["new"])
@@ -419,12 +419,12 @@ fn a_garden_flag_without_viri_kdl_fails() {
 
 #[test]
 fn an_editor_that_exits_nonzero_fails() {
-    let (_dir, root) = garden();
+    let (dir, root) = garden();
     cmd()
         .args(["edit", "z"])
         .arg("--garden")
         .arg(&root)
-        .env("VISUAL", "/bin/false")
+        .env("VISUAL", script(&dir, "fail.sh", "#!/bin/sh\nexit 1\n"))
         .assert()
         .failure()
         .stderr(predicates::str::contains("the editor exited with"));
@@ -464,7 +464,7 @@ fn a_buffer_that_loses_its_fence_self_heals() {
             "stamp=$(dirname \"$0\")/dropped\n",
             "if [ ! -f \"$stamp\" ]; then\n",
             "    touch \"$stamp\"\n",
-            "    sed -i '1d' \"$1\"\n",
+            "    sed -i.bak '1d' \"$1\" && rm \"$1.bak\"\n",
             "fi\n",
         ),
     );
@@ -500,6 +500,7 @@ fn the_gitignore_gain_appends_after_a_trailing_newline() {
 }
 
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "APFS rejects non-UTF-8 file names")]
 fn a_non_utf8_working_directory_fails_cleanly() {
     use std::os::unix::ffi::OsStrExt as _;
     let dir = TempDir::new().unwrap();
@@ -527,7 +528,7 @@ fn a_changed_but_invalid_buffer_reopens_and_recovers() {
             "stamp=$(dirname \"$0\")/invalid\n",
             "if [ ! -f \"$stamp\" ]; then\n",
             "    touch \"$stamp\"\n",
-            "    sed -i 's/^slug: harissa$/slug: Not-Kebab/' \"$1\"\n",
+            "    sed -i.bak 's/^slug: harissa$/slug: Not-Kebab/' \"$1\" && rm \"$1.bak\"\n",
             "fi\n",
         ),
     );

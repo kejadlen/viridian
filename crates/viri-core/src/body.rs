@@ -589,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "macos", ignore = "APFS rejects non-UTF-8 file names")]
     fn non_utf8_conf_entries_are_skipped() {
         let _guard = ENV.lock().unwrap();
         let dir = tempfile::TempDir::new().unwrap();

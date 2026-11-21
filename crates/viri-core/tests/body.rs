@@ -255,6 +255,7 @@ async fn read_body_fails_when_the_body_is_a_directory() {
 }
 
 #[tokio::test]
+#[cfg_attr(target_os = "macos", ignore = "APFS rejects non-UTF-8 file names")]
 async fn read_body_fails_on_a_non_utf8_file_name() {
     use std::os::unix::ffi::OsStrExt as _;
     let (dir, bodies) = garden().await;
