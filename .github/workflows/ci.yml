@@ -57,3 +57,10 @@ jobs:
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
       - run: cargo install --locked cargo-mutants just
       - run: just mutants
+
+  release:
+    needs: [zizmor, checks, mutants]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write # create the release.
+    uses: $/.github/workflows/release.yml
