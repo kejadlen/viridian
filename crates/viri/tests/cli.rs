@@ -911,3 +911,12 @@ fn the_internal_command_is_hidden_from_help() {
         .success()
         .stdout(predicates::str::contains("__internal").not());
 }
+
+#[test]
+fn version_prints_the_build_stamp() {
+    cmd()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(format!("viri {}\n", env!("VIRI_VERSION")));
+}

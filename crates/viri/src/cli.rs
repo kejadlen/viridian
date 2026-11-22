@@ -26,7 +26,7 @@ use crate::editor;
 use crate::prompt;
 
 #[derive(Parser)]
-#[command(name = "viri", about = "Tend a viridian garden")]
+#[command(name = "viri", about = "Tend a viridian garden", version = env!("VIRI_VERSION"))]
 pub struct Cli {
     /// A garden name from the viri config, or a path containing `/`
     /// [default: every known garden; for new, the enclosing garden, then the config's default]
