@@ -8,6 +8,7 @@ camino.workspace = true
 clap.workspace = true
 fs-err.workspace = true
 jiff.workspace = true
+kdl.workspace = true
 miette.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true

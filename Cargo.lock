@@ -3005,6 +3005,7 @@ dependencies = [
  "hegeltest",
  "jiff",
  "jj-lib",
+ "kdl",
  "miette",
  "predicates",
  "tempfile",

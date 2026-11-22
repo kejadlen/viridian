@@ -23,8 +23,315 @@ use jj_lib::settings::UserSettings;
 use jj_lib::workspace::Workspace;
 use tempfile::TempDir;
 
+/// The binary, kept away from the real viri config.
 fn cmd() -> assert_cmd::Command {
-    cargo_bin_cmd!("viri")
+    let mut cmd = cargo_bin_cmd!("viri");
+    cmd.env("XDG_CONFIG_HOME", "/nonexistent-viri-config");
+    cmd
+}
+
+/// A garden named `name` in a fresh jj workspace, its `viri.kdl` holding
+/// `nodes` and no bodies.
+fn bare_garden(name: &str, nodes: &[String]) -> (TempDir, Utf8PathBuf) {
+    let dir = TempDir::new().unwrap();
+    let root = Utf8PathBuf::try_from(dir.path().canonicalize().unwrap()).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        Workspace::init_simple(&settings(), dir.path(), &WorkspaceNameBuf::from("default"))
+            .await
+            .unwrap();
+    });
+    fs_err::write(
+        root.join("viri.kdl"),
+        format!("garden \"{name}\"\n\n{}", nodes.join("\n")),
+    )
+    .unwrap();
+    (dir, root)
+}
+
+fn node(id: &str, slug: &str) -> String {
+    format!("node \"{id}\" {{\n    slug \"{slug}\"\n    created \"2026-11-21T10:00:00Z\"\n}}\n")
+}
+
+/// The `other` garden: a second `harissa` and a `pantry`.
+fn other_garden() -> (TempDir, Utf8PathBuf) {
+    bare_garden(
+        "other",
+        &[node("xkkkkkkk", "harissa"), node("lmnoprst", "pantry")],
+    )
+}
+
+/// The binary with a viri config listing `roots`, followed by `extra`.
+fn configured(roots: &[&Utf8PathBuf], extra: &str) -> (TempDir, assert_cmd::Command) {
+    let dir = TempDir::new().unwrap();
+    let viri = dir.path().join("viri");
+    fs_err::create_dir(&viri).unwrap();
+    let gardens: String = roots
+        .iter()
+        .map(|root| format!("garden \"{root}\"\n"))
+        .collect();
+    fs_err::write(viri.join("config.kdl"), format!("{gardens}{extra}")).unwrap();
+    let mut cmd = cmd();
+    cmd.env("XDG_CONFIG_HOME", dir.path());
+    (dir, cmd)
+}
+
+#[test]
+fn ls_spans_every_garden_and_qualifies_shared_slugs() {
+    let (_a, test) = garden();
+    let (_b, other) = other_garden();
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["ls"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(concat!(
+            "q  viridian\n",
+            "z  test/harissa  #recipe #spicy\n",
+            "x  other/harissa\n",
+            "l  pantry\n",
+        ));
+}
+
+#[test]
+fn the_garden_flag_narrows_a_read_to_one_garden() {
+    let (_a, test) = garden();
+    let (_b, other) = other_garden();
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["ls", "--garden", "other"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout("x  harissa\nl  pantry\n");
+}
+
+#[test]
+fn show_and_edit_find_the_garden_holding_the_node() {
+    let (_a, test) = garden();
+    let (_b, other) = other_garden();
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["show", "x"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("id: xkkkkkkk\nslug: harissa\n"));
+
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["edit", "x"])
+        .current_dir(dir.path())
+        .env("VISUAL", body_editor(&dir, "Toast the cumin."))
+        .assert()
+        .success();
+    let body = fs_err::read_to_string(other.join("xkkkkkkk harissa.viri")).unwrap();
+    assert_eq!(body, "Toast the cumin.\n");
+    assert!(!test.join("xkkkkkkk harissa.viri").exists());
+}
+
+#[test]
+fn a_prefix_matching_nodes_in_two_gardens_is_ambiguous() {
+    let (_a, test) = garden();
+    let (_b, other) = bare_garden("other", &[node("zxxxxxxx", "zest")]);
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["show", "z"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("matches several node ids"));
+}
+
+#[test]
+fn a_node_id_in_two_gardens_fails() {
+    let (_a, test) = garden();
+    let (_b, other) = bare_garden("other", &[node("zkqpmzxy", "copy")]);
+    let (dir, mut viri) = configured(&[&test, &other], "");
+    viri.args(["ls"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("node zkqpmzxy is in two gardens"));
+}
+
+#[test]
+fn an_unreachable_configured_garden_fails_reads() {
+    let missing = Utf8PathBuf::from("/nonexistent-viri-garden");
+    let (dir, mut viri) = configured(&[&missing], "");
+    viri.args(["ls"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("can't reach the garden"));
+}
+
+#[test]
+fn the_enclosing_garden_appears_once_when_configured_too() {
+    let (_a, test) = garden();
+    let (_dir, mut viri) = configured(&[&test], "");
+    viri.args(["ls"])
+        .current_dir(&test)
+        .assert()
+        .success()
+        .stdout("q  viridian\nz  harissa  #recipe #spicy\n");
+}
+
+#[test]
+fn new_prefers_the_enclosing_garden_over_the_default() {
+    let (_a, test) = garden();
+    let (_b, other) = other_garden();
+    let (dir, mut viri) = configured(&[&test, &other], "default \"other\"\n");
+    viri.args(["new"])
+        .current_dir(&test)
+        .env("VISUAL", slug_editor(&dir, "sesame-noodles"))
+        .assert()
+        .success();
+    let meta = fs_err::read_to_string(test.join("viri.kdl")).unwrap();
+    assert!(meta.contains("slug \"sesame-noodles\""), "{meta}");
+}
+
+/// Runs `viri new` outside any garden with the `other` garden, plus `test` when `both`, and
+/// `extra`, then returns what happened and the `other` garden's metadata.
+fn new_outside(extra: &str, args: &[&str], both: bool) -> (assert_cmd::assert::Assert, String) {
+    let (_a, test) = garden();
+    let (_b, other) = other_garden();
+    let roots: Vec<&Utf8PathBuf> = if both {
+        vec![&test, &other]
+    } else {
+        vec![&other]
+    };
+    let (dir, mut viri) = configured(&roots, extra);
+    let assert = viri
+        .arg("new")
+        .args(args)
+        .current_dir(dir.path())
+        .env("VISUAL", slug_editor(&dir, "sesame-noodles"))
+        .assert();
+    let meta = fs_err::read_to_string(other.join("viri.kdl")).unwrap();
+    (assert, meta)
+}
+
+#[test]
+fn new_uses_the_default_outside_any_garden() {
+    let (assert, meta) = new_outside("default \"other\"\n", &[], true);
+    assert.success();
+    assert!(meta.contains("slug \"sesame-noodles\""), "{meta}");
+}
+
+#[test]
+fn new_uses_a_named_garden() {
+    let (assert, meta) = new_outside("", &["-g", "other"], true);
+    assert.success();
+    assert!(meta.contains("slug \"sesame-noodles\""), "{meta}");
+}
+
+#[test]
+fn new_uses_the_only_known_garden() {
+    let (assert, meta) = new_outside("", &[], false);
+    assert.success();
+    assert!(meta.contains("slug \"sesame-noodles\""), "{meta}");
+}
+
+#[test]
+fn new_asks_which_garden_when_several_could_take_it() {
+    let (assert, meta) = new_outside("", &[], true);
+    assert.failure().stderr(predicates::str::contains(
+        "which garden should the new node go in",
+    ));
+    assert!(!meta.contains("sesame-noodles"), "{meta}");
+}
+
+#[test]
+fn new_outside_any_garden_with_no_config_fails() {
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args(["new"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no garden found"));
+}
+
+#[test]
+fn an_unknown_garden_name_lists_the_known_ones() {
+    let (_b, other) = other_garden();
+    let (dir, mut viri) = configured(&[&other], "");
+    viri.args(["ls", "-g", "work"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no garden is named `work`"))
+        .stderr(predicates::str::contains("named other"));
+}
+
+#[test]
+fn an_unknown_default_fails() {
+    let (assert, _meta) = new_outside("default \"work\"\n", &[], true);
+    assert
+        .failure()
+        .stderr(predicates::str::contains("no garden is named `work`"));
+}
+
+#[test]
+fn a_broken_config_fails_every_command() {
+    let (_a, test) = garden();
+    let (dir, mut viri) = configured(&[], "garden \"relative\"\n");
+    viri.args(["ls"])
+        .arg("--garden")
+        .arg(&test)
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("is relative"));
+}
+
+#[test]
+fn the_config_falls_back_to_home() {
+    let (_garden_dir, root) = garden();
+    let home = TempDir::new().unwrap();
+    let config = home.path().join(".config").join("viri");
+    fs_err::create_dir_all(&config).unwrap();
+    // Exercises `~/` expansion against $HOME, too.
+    let name = root.file_name().unwrap();
+    fs_err::rename(&root, home.path().join(name)).unwrap();
+    fs_err::write(config.join("config.kdl"), format!("garden \"~/{name}\"\n")).unwrap();
+    cmd()
+        .args(["ls"])
+        .current_dir(home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env("HOME", home.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("harissa"));
+}
+
+#[test]
+fn a_non_utf8_xdg_config_home_fails() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = TempDir::new().unwrap();
+    cmd()
+        .args(["ls"])
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", std::ffi::OsStr::from_bytes(b"/bad-\xff"))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "$XDG_CONFIG_HOME is not valid UTF-8",
+        ));
+}
+
+#[test]
+fn a_garden_value_with_a_slash_is_a_path() {
+    let (_garden_dir, root) = garden();
+    let parent = root.parent().unwrap();
+    let name = root.file_name().unwrap();
+    cmd()
+        .args(["ls", "--garden", &format!("./{name}")])
+        .current_dir(parent)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("harissa"));
+    cmd()
+        .args(["ls", "--garden", "."])
+        .current_dir(&root)
+        .assert()
+        .success();
 }
 
 fn settings() -> std::sync::Arc<UserSettings> {
@@ -427,7 +734,7 @@ fn a_garden_flag_without_viri_kdl_fails() {
         .arg(dir.path())
         .assert()
         .failure()
-        .stderr(predicates::str::contains("no garden found"));
+        .stderr(predicates::str::contains("has no viri.kdl"));
 }
 
 #[test]

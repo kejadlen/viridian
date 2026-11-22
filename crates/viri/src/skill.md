@@ -6,8 +6,16 @@ that printed it, so it matches that build's commands.
 ## Gardens and nodes
 
 A garden is a directory holding a `viri.kdl` metadata file and a jj repo
-for node bodies. `viri` uses the nearest ancestor directory with a
-`viri.kdl`, or the directory given with `--garden <path>`.
+for node bodies. The user config, `$XDG_CONFIG_HOME/viri/config.kdl` or
+`~/.config/viri/config.kdl`, lists gardens as `garden "<path>"` lines
+and can name a `default "<name>"`. A garden's name is the `garden` line
+in its `viri.kdl`.
+
+`ls`, `show`, and `edit` cover every configured garden plus the nearest
+ancestor directory with a `viri.kdl`. `new` uses that ancestor, else the
+default, else the only known garden. `--garden <name|path>` picks the
+garden for `new` and narrows the others to it. A value with a `/` is a
+path, so write `./notes`, not `notes`.
 
 Every node has an 8-character jj-style change id, and any unique prefix
 of it names the node. A node's body is markdown in
@@ -33,7 +41,7 @@ Values are quoted strings, so the file is valid KDL. `slug` and
 |---|---|
 | `viri new [<parent>...]` | Opens the editor on a new node, with a `parent` component for each id prefix given |
 | `viri edit <prefix>` | Opens the editor on an existing node |
-| `viri ls` | Lists each node's shortest unique id prefix, slug, and tags |
+| `viri ls` | Lists each node's shortest unique id prefix, slug, and tags, writing a slug two gardens share as `<garden>/<slug>` |
 | `viri show <prefix>` | Prints a node in the edit buffer's format |
 
 `viri new` prints the new node's short id and slug.

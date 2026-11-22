@@ -1,29 +1,59 @@
 //! The `viri` command line: new, edit, ls, and show.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::convert::Infallible;
+use std::str::FromStr;
 
+use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use clap::Parser;
 use clap::Subcommand;
 use miette::Diagnostic;
 use thiserror::Error;
 use viri_core::Garden;
+use viri_core::Gardens;
 use viri_core::Node;
+use viri_core::NodeId;
+use viri_core::id;
 use viri_core::id::Prefix;
 use viri_core::schema::NodeMeta;
 
 use crate::buffer::Buffer;
+use crate::config::Config;
 use crate::editor;
 
 #[derive(Parser)]
 #[command(name = "viri", about = "Tend a viridian garden")]
 pub struct Cli {
-    /// The garden's root directory [default: the nearest ancestor holding a viri.kdl]
-    #[arg(long, short, global = true)]
-    pub garden: Option<PathBuf>,
+    /// A garden name from the viri config, or a path containing `/`
+    /// [default: every known garden; for new, the enclosing garden, then the config's default]
+    #[arg(long, short, global = true, value_name = "NAME|PATH")]
+    pub garden: Option<GardenArg>,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// How `--garden` names a garden. A value with a `/` in it, or `.` or
+/// `..`, is a path; anything else is a name, so `./notes` reaches a
+/// relative directory and `notes` never silently does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GardenArg {
+    Path(Utf8PathBuf),
+    Name(String),
+}
+
+impl FromStr for GardenArg {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s.contains('/') || s == "." || s == ".." {
+            GardenArg::Path(s.into())
+        } else {
+            GardenArg::Name(s.to_owned())
+        })
+    }
 }
 
 #[derive(Subcommand)]
@@ -69,39 +99,67 @@ pub async fn run(cli: Cli) -> Result<(), miette::Report> {
         Command::Internal {
             command: Internal::Skill,
         } => print!("{SKILL_GUIDE}"),
-        Command::Ls => ls(&open(cli.garden).await?),
-        Command::Show { prefix } => show(&open(cli.garden).await?, &prefix).await?,
-        Command::New { parents } => new(&mut open(cli.garden).await?, &parents).await?,
-        Command::Edit { prefix } => edit(&mut open(cli.garden).await?, &prefix).await?,
+        Command::Ls => ls(&reading(cli.garden).await?),
+        Command::Show { prefix } => show(&reading(cli.garden).await?, &prefix).await?,
+        Command::Edit { prefix } => edit(&mut reading(cli.garden).await?, &prefix).await?,
+        Command::New { parents } => new(cli.garden, &parents).await?,
     }
     Ok(())
 }
 
-async fn open(explicit: Option<PathBuf>) -> Result<Garden, miette::Report> {
-    let root = find_garden(explicit)?;
-    Ok(Garden::open(&root).await?)
+/// The gardens a read covers: the one `--garden` names, or every garden
+/// viri knows.
+async fn reading(explicit: Option<GardenArg>) -> Result<Gardens, miette::Report> {
+    let config = Config::load()?;
+    let roots = match explicit_root(&config, explicit)? {
+        Some(root) => vec![root],
+        None => known_roots(&config)?,
+    };
+    if roots.is_empty() {
+        return Err(GardenNotFound.into());
+    }
+    open_all(roots).await
 }
 
-fn ls(garden: &Garden) {
-    for node in garden.nodes() {
-        let short = garden.shortest_prefix(&node.id);
-        let slug = node.slug.as_deref().unwrap_or("(no slug)");
-        let tags = node
-            .tags
-            .iter()
-            .map(|tag| format!("#{tag}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if tags.is_empty() {
-            println!("{short}  {slug}");
-        } else {
-            println!("{short}  {slug}  {tags}");
+/// Lists every node. A slug that more than one garden uses is qualified
+/// as `<garden>/<slug>`; elsewhere the garden goes unsaid.
+fn ls(gardens: &Gardens) {
+    let ids = gardens.ids();
+    let mut holders: BTreeMap<&str, BTreeSet<&Utf8Path>> = BTreeMap::new();
+    for garden in gardens.iter() {
+        for node in garden.nodes() {
+            let slug = node.slug.as_deref().unwrap_or("(no slug)");
+            holders.entry(slug).or_default().insert(garden.root());
+        }
+    }
+
+    for garden in gardens.iter() {
+        for node in garden.nodes() {
+            let short = id::shortest_prefix(&node.id, &ids);
+            let slug = node.slug.as_deref().unwrap_or("(no slug)");
+            let shared = holders.get(slug).is_some_and(|roots| roots.len() > 1);
+            let slug = if shared {
+                format!("{}/{slug}", garden.name())
+            } else {
+                slug.to_owned()
+            };
+            let tags = node
+                .tags
+                .iter()
+                .map(|tag| format!("#{tag}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if tags.is_empty() {
+                println!("{short}  {slug}");
+            } else {
+                println!("{short}  {slug}  {tags}");
+            }
         }
     }
 }
 
-async fn show(garden: &Garden, prefix: &Prefix) -> Result<(), miette::Report> {
-    let id = garden.resolve(prefix)?;
+async fn show(gardens: &Gardens, prefix: &Prefix) -> Result<(), miette::Report> {
+    let (garden, id) = gardens.resolve(prefix)?;
     let node = garden.load(&id).await?;
     print!(
         "{}",
@@ -110,8 +168,19 @@ async fn show(garden: &Garden, prefix: &Prefix) -> Result<(), miette::Report> {
     Ok(())
 }
 
-async fn new(garden: &mut Garden, parents: &[Prefix]) -> Result<(), miette::Report> {
-    let id = garden.generate_id();
+/// Creates a node in the target garden, with an id no known garden uses
+/// so its prefixes stay unique across all of them.
+async fn new(explicit: Option<GardenArg>, parents: &[Prefix]) -> Result<(), miette::Report> {
+    let config = Config::load()?;
+    let target = target_root(&config, explicit)?;
+    let mut roots = known_roots(&config)?;
+    if !roots.contains(&target) {
+        roots.push(target.clone());
+    }
+    let mut gardens = open_all(roots).await?;
+    let id = NodeId::generate_unused(&gardens.ids());
+    let garden = gardens.get_mut(&target).ok_or(GardenNotFound)?;
+
     let mut meta = NodeMeta::new(id);
     for prefix in parents {
         meta.parents.push(garden.resolve(prefix)?);
@@ -130,14 +199,14 @@ async fn new(garden: &mut Garden, parents: &[Prefix]) -> Result<(), miette::Repo
         .await?;
     println!(
         "{}  {}",
-        garden.shortest_prefix(&id),
+        gardens.shortest_prefix(&id),
         edited.meta.slug.as_deref().unwrap_or_default()
     );
     Ok(())
 }
 
-async fn edit(garden: &mut Garden, prefix: &Prefix) -> Result<(), miette::Report> {
-    let id = garden.resolve(prefix)?;
+async fn edit(gardens: &mut Gardens, prefix: &Prefix) -> Result<(), miette::Report> {
+    let (garden, id) = gardens.resolve_mut(prefix)?;
     let node = garden.load(&id).await?;
     let old_slug = node.meta.slug.clone();
     let start = Buffer::new(node.meta.clone(), node.body);
@@ -155,31 +224,134 @@ async fn edit(garden: &mut Garden, prefix: &Prefix) -> Result<(), miette::Report
     Ok(())
 }
 
-fn find_garden(explicit: Option<PathBuf>) -> Result<Utf8PathBuf, GardenNotFound> {
-    if let Some(path) = explicit {
-        let path = Utf8PathBuf::try_from(path).map_err(|_| GardenNotFound)?;
-        if path.join("viri.kdl").is_file() {
-            return Ok(path);
-        }
-        return Err(GardenNotFound);
+/// Picks the garden a new node goes in: `--garden`, else the enclosing
+/// garden, else the config's default, else the only garden viri knows.
+fn target_root(
+    config: &Config,
+    explicit: Option<GardenArg>,
+) -> Result<Utf8PathBuf, miette::Report> {
+    if let Some(root) = explicit_root(config, explicit)? {
+        return Ok(root);
     }
+    if let Some(root) = enclosing_garden()? {
+        return Ok(canonical(&root)?);
+    }
+    if let Some(name) = &config.default {
+        return Ok(canonical(&config.find(name)?)?);
+    }
+    let roots = known_roots(config)?;
+    match roots.as_slice() {
+        [] => Err(GardenNotFound.into()),
+        [root] => Ok(root.clone()),
+        _ => Err(WhichGarden {
+            roots: roots
+                .iter()
+                .map(|root| root.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+        .into()),
+    }
+}
+
+/// The garden `--garden` names, if it was passed.
+fn explicit_root(
+    config: &Config,
+    explicit: Option<GardenArg>,
+) -> Result<Option<Utf8PathBuf>, miette::Report> {
+    match explicit {
+        None => Ok(None),
+        Some(GardenArg::Path(path)) if path.join("viri.kdl").is_file() => {
+            Ok(Some(canonical(&path)?))
+        }
+        Some(GardenArg::Path(path)) => Err(NotAGarden { path }.into()),
+        Some(GardenArg::Name(name)) => Ok(Some(canonical(&config.find(&name)?)?)),
+    }
+}
+
+/// Every garden viri knows: the configured ones and the enclosing one,
+/// each once.
+fn known_roots(config: &Config) -> Result<Vec<Utf8PathBuf>, miette::Report> {
+    let mut roots = Vec::new();
+    for root in config.gardens.iter().cloned().chain(enclosing_garden()?) {
+        let root = canonical(&root)?;
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+async fn open_all(roots: Vec<Utf8PathBuf>) -> Result<Gardens, miette::Report> {
+    let mut gardens = Vec::new();
+    for root in roots {
+        gardens.push(Garden::open(&root).await?);
+    }
+    Ok(Gardens::new(gardens)?)
+}
+
+/// Canonical, so the same garden reached by two paths counts once.
+fn canonical(root: &Utf8Path) -> Result<Utf8PathBuf, Unreachable> {
+    root.canonicalize_utf8().map_err(|source| Unreachable {
+        root: root.to_owned(),
+        source,
+    })
+}
+
+/// The nearest ancestor of the working directory holding a `viri.kdl`.
+/// One that can't be named as UTF-8 is an error rather than `None`, so
+/// viri never falls back to the default garden from inside another one.
+fn enclosing_garden() -> Result<Option<Utf8PathBuf>, GardenNotFound> {
     let cwd = std::env::current_dir().map_err(|_| GardenNotFound)?;
     let mut dir: Option<&std::path::Path> = Some(cwd.as_path());
     while let Some(current) = dir {
         if current.join("viri.kdl").is_file() {
             // cov-excl-macos-start
-            return Utf8PathBuf::try_from(current.to_owned()).map_err(|_| GardenNotFound);
+            return Utf8PathBuf::try_from(current.to_owned())
+                .map(Some)
+                .map_err(|_| GardenNotFound);
             // cov-excl-macos-stop
         }
         dir = current.parent();
     }
-    Err(GardenNotFound)
+    Ok(None)
 }
 
 #[derive(Error, Diagnostic, Debug)]
-#[error("no garden found: expected a viri.kdl in this directory or an ancestor")]
+#[error("no garden found: not inside a garden, and the viri config lists none")]
 #[diagnostic(
     code(viri::cli::garden_not_found),
-    help("run viri inside a garden, or pass --garden <path>")
+    help(
+        "run viri inside a garden, pass --garden <path>, or list gardens in $XDG_CONFIG_HOME/viri/config.kdl"
+    )
 )]
 pub struct GardenNotFound;
+
+#[derive(Error, Diagnostic, Debug)]
+#[error("{path} is not a garden: it has no viri.kdl")]
+#[diagnostic(code(viri::cli::not_a_garden))]
+pub struct NotAGarden {
+    path: Utf8PathBuf,
+}
+
+#[derive(Error, Diagnostic, Debug)]
+#[error("can't reach the garden at {root}")]
+#[diagnostic(
+    code(viri::cli::unreachable_garden),
+    help("fix the path, or remove it from the viri config")
+)]
+pub struct Unreachable {
+    root: Utf8PathBuf,
+    #[source]
+    source: std::io::Error,
+}
+
+#[derive(Error, Diagnostic, Debug)]
+#[error("which garden should the new node go in? viri knows {roots}")]
+#[diagnostic(
+    code(viri::cli::which_garden),
+    help("pass --garden <name|path>, or set `default` in the viri config")
+)]
+pub struct WhichGarden {
+    roots: String,
+}

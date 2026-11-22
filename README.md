@@ -31,15 +31,34 @@ jj git init
 printf 'garden "personal"\n' > viri.kdl
 ```
 
-`viri` finds the garden by looking for `viri.kdl` in the current
-directory and its ancestors. Pass `--garden <path>` to point it
-somewhere else. It has the following commands:
+To use several gardens from anywhere, list them in
+`$XDG_CONFIG_HOME/viri/config.kdl`, or in `~/.config/viri/config.kdl`
+when `XDG_CONFIG_HOME` is unset. macOS uses the same paths:
+
+```kdl
+garden "~/notes/personal"
+garden "~/notes/public"
+default "personal"
+```
+
+Each `garden` line is a garden's directory, either absolute or starting
+with `~/`. A garden's name comes from the `garden` line in its own
+`viri.kdl`.
+
+`ls`, `show`, and `edit` cover every configured garden plus the one
+you're in, and id prefixes are unique across all of them. `new` puts
+the node in the garden you're in, else in the `default` garden, else in
+the only garden `viri` knows. Pass `--garden <name>` or `--garden
+<path>` to choose the garden for `new`, or to narrow the other commands
+to one garden. A value with a `/` in it, such as `./notes`, is a path.
+
+`viri` has the following commands:
 
 | Command | Effect |
 |---|---|
 | `viri new [<parent>...]` | Opens the editor on a new node, with a `parent` component for each id prefix given |
 | `viri edit <prefix>` | Opens the editor on an existing node |
-| `viri ls` | Lists each node's short id, slug, and tags |
+| `viri ls` | Lists each node's short id, slug, and tags, writing a slug two gardens share as `<garden>/<slug>` |
 | `viri show <prefix>` | Prints a node in the editor's format |
 
 Ids are 8-character jj-style change ids. Any unique prefix names a node.

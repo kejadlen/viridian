@@ -49,23 +49,18 @@ impl Garden {
         &self.root
     }
 
-    pub fn ids(&self) -> BTreeSet<NodeId> {
-        self.meta.ids()
+    /// The name from the `garden "<name>"` line in `viri.kdl`.
+    pub fn name(&self) -> &str {
+        self.meta.garden_name()
     }
 
-    /// The shortest prefix of `id` unique within the garden.
-    pub fn shortest_prefix(&self, id: &NodeId) -> Prefix {
-        id::shortest_prefix(id, &self.ids())
+    pub fn ids(&self) -> BTreeSet<NodeId> {
+        self.meta.ids()
     }
 
     /// Resolves a prefix to the unique node it names.
     pub fn resolve(&self, prefix: &Prefix) -> Result<NodeId, PrefixError> {
         id::resolve_prefix(prefix, &self.ids())
-    }
-
-    /// A fresh id the garden doesn't use yet.
-    pub fn generate_id(&self) -> NodeId {
-        NodeId::generate_unused(&self.ids())
     }
 
     /// Loads a node: metadata plus body. The body is empty when the body file
