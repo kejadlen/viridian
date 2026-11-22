@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::io::IsTerminal as _;
 use std::str::FromStr;
 
 use camino::Utf8Path;
@@ -22,6 +23,7 @@ use viri_core::schema::NodeMeta;
 use crate::buffer::Buffer;
 use crate::config::Config;
 use crate::editor;
+use crate::prompt;
 
 #[derive(Parser)]
 #[command(name = "viri", about = "Tend a viridian garden")]
@@ -172,12 +174,24 @@ async fn show(gardens: &Gardens, prefix: &Prefix) -> Result<(), miette::Report> 
 /// so its prefixes stay unique across all of them.
 async fn new(explicit: Option<GardenArg>, parents: &[Prefix]) -> Result<(), miette::Report> {
     let config = Config::load()?;
-    let target = target_root(&config, explicit)?;
+    let preferred = match explicit_root(&config, explicit)? {
+        Some(root) => Some(root),
+        None => implied_root(&config)?,
+    };
     let mut roots = known_roots(&config)?;
-    if !roots.contains(&target) {
-        roots.push(target.clone());
+    if let Some(root) = &preferred
+        && !roots.contains(root)
+    {
+        roots.push(root.clone());
+    }
+    if roots.is_empty() {
+        return Err(GardenNotFound.into());
     }
     let mut gardens = open_all(roots).await?;
+    let target = match preferred {
+        Some(root) => root,
+        None => choose_root(&gardens)?,
+    };
     let id = NodeId::generate_unused(&gardens.ids());
     let garden = gardens.get_mut(&target).ok_or(GardenNotFound)?;
 
@@ -224,34 +238,47 @@ async fn edit(gardens: &mut Gardens, prefix: &Prefix) -> Result<(), miette::Repo
     Ok(())
 }
 
-/// Picks the garden a new node goes in: `--garden`, else the enclosing
-/// garden, else the config's default, else the only garden viri knows.
-fn target_root(
-    config: &Config,
-    explicit: Option<GardenArg>,
-) -> Result<Utf8PathBuf, miette::Report> {
-    if let Some(root) = explicit_root(config, explicit)? {
-        return Ok(root);
-    }
+/// The garden a new node goes in without `--garden`: the enclosing
+/// garden, else the config's default.
+fn implied_root(config: &Config) -> Result<Option<Utf8PathBuf>, miette::Report> {
     if let Some(root) = enclosing_garden()? {
-        return Ok(canonical(&root)?);
+        return Ok(Some(canonical(&root)?));
     }
-    if let Some(name) = &config.default {
-        return Ok(canonical(&config.find(name)?)?);
+    match &config.default {
+        Some(name) => Ok(Some(canonical(&config.find(name)?)?)),
+        None => Ok(None),
     }
-    let roots = known_roots(config)?;
-    match roots.as_slice() {
-        [] => Err(GardenNotFound.into()),
-        [root] => Ok(root.clone()),
-        _ => Err(WhichGarden {
-            roots: roots
-                .iter()
-                .map(|root| root.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-        }
-        .into()),
+}
+
+/// The only garden, or the one the user picks when there are several.
+/// Without a terminal to ask on, several is an error.
+fn choose_root(gardens: &Gardens) -> Result<Utf8PathBuf, miette::Report> {
+    let choices: Vec<(&str, &Utf8Path)> = gardens.iter().map(|g| (g.name(), g.root())).collect();
+    if let [(_, root)] = choices.as_slice() {
+        return Ok(root.to_path_buf());
     }
+    if std::io::stdin().is_terminal() {
+        // The tests have no terminal; prompt.rs covers the prompt itself.
+        // cov-excl-start
+        let index = prompt::choose_garden(
+            &choices,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stderr(),
+        )?;
+        return choices
+            .get(index)
+            .map(|(_, root)| root.to_path_buf())
+            .ok_or_else(|| GardenNotFound.into());
+    }
+    // cov-excl-stop
+    Err(WhichGarden {
+        roots: choices
+            .iter()
+            .map(|(_, root)| root.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+    .into())
 }
 
 /// The garden `--garden` names, if it was passed.
@@ -350,7 +377,9 @@ pub struct Unreachable {
 #[error("which garden should the new node go in? viri knows {roots}")]
 #[diagnostic(
     code(viri::cli::which_garden),
-    help("pass --garden <name|path>, or set `default` in the viri config")
+    help(
+        "pass --garden <name|path>, set `default` in the viri config, or run viri in a terminal to choose"
+    )
 )]
 pub struct WhichGarden {
     roots: String,

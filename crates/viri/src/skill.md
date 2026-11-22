@@ -13,9 +13,10 @@ in its `viri.kdl`.
 
 `ls`, `show`, and `edit` cover every configured garden plus the nearest
 ancestor directory with a `viri.kdl`. `new` uses that ancestor, else the
-default, else the only known garden. `--garden <name|path>` picks the
-garden for `new` and narrows the others to it. A value with a `/` is a
-path, so write `./notes`, not `notes`.
+default, else the only known garden, else asks on the terminal. Without
+a terminal it fails, so scripts should pass `--garden`. `--garden
+<name|path>` picks the garden for `new` and narrows the others to it. A
+value with a `/` is a path, so write `./notes`, not `notes`.
 
 Every node has an 8-character jj-style change id, and any unique prefix
 of it names the node. A node's body is markdown in

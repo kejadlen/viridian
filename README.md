@@ -48,9 +48,11 @@ with `~/`. A garden's name comes from the `garden` line in its own
 `ls`, `show`, and `edit` cover every configured garden plus the one
 you're in, and id prefixes are unique across all of them. `new` puts
 the node in the garden you're in, else in the `default` garden, else in
-the only garden `viri` knows. Pass `--garden <name>` or `--garden
-<path>` to choose the garden for `new`, or to narrow the other commands
-to one garden. A value with a `/` in it, such as `./notes`, is a path.
+the only garden `viri` knows. With several gardens and none of those
+to go on, it asks which one, or fails when it has no terminal to ask
+on. Pass `--garden <name>` or `--garden <path>` to choose the garden
+for `new`, or to narrow the other commands to one garden. A value with
+a `/` in it, such as `./notes`, is a path.
 
 `viri` has the following commands:
 
